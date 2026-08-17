@@ -525,13 +525,17 @@ class _MagnetHomePageState extends State<MagnetHomePage> {
       final previousId = _torrentId;
       if (previousId != null) {
         try {
-          engine.disposeTorrent(previousId);
+          engine.removeTorrent(previousId, deleteFiles: true);
         } catch (_) {
           // Already gone.
         }
       }
 
-      final id = engine.addMagnet(_withFallbackTrackers(value));
+      // Magnets are stream-only: libtorrent should request pieces on demand,
+      // not run as a normal background downloader. Passing streamOnly=true
+      // also marks the torrent ephemeral so the native engine removes its
+      // sparse cache when the stream is stopped.
+      final id = engine.addMagnet(_withFallbackTrackers(value), null, true);
       final name = _nameFromMagnet(value);
       final entry = MagnetEntry(
         uri: value,
@@ -598,20 +602,25 @@ class _MagnetHomePageState extends State<MagnetHomePage> {
       }
 
       await _closePlayback();
-      final oldTorrentId = _activeTorrentId;
+      final oldTorrentId = _torrentId;
       if (oldTorrentId != null) {
-        _engine!.removeTorrent(oldTorrentId, deleteFiles: false);
+        _engine!.removeTorrent(oldTorrentId, deleteFiles: true);
       }
 
       final id = _engine!.addTorrentFile(path, null, true);
       setState(() {
-        _activeTorrentId = id;
+        _torrentId = id;
+        _torrent = null;
         _activeMagnet = null;
         _activeName = selected.name;
         _magnetController.clear();
         _files = [];
-        _torrents = {};
+        _autoStartedTorrentId = null;
+        _addedAt = DateTime.now();
+        _lastReannounce = null;
+        _reannounceCount = 0;
         _isAdding = false;
+        _status = 'Looking for peers and metadata…';
       });
     } catch (error) {
       if (!mounted) return;
@@ -986,6 +995,7 @@ class _MagnetHomePageState extends State<MagnetHomePage> {
   }
 
   String get _stateLabel {
+    if (_stream != null) return 'Streaming';
     final torrent = _torrent;
     if (torrent == null) return 'Connecting';
     if (!torrent.hasMetadata) return 'Getting metadata';
@@ -1313,7 +1323,6 @@ class _MagnetHomePageState extends State<MagnetHomePage> {
   Widget _buildTorrentCard() {
     final torrent = _torrent;
     final hasMetadata = torrent?.hasMetadata ?? false;
-    final progress = (torrent?.progress ?? 0).clamp(0.0, 1.0);
     final saved = _savedMagnets.any((entry) => entry.uri == _activeMagnet);
 
     return Card(
@@ -1397,12 +1406,11 @@ class _MagnetHomePageState extends State<MagnetHomePage> {
             ),
             const SizedBox(height: 14),
             if (hasMetadata) ...[
-              ClipRRect(
-                borderRadius: BorderRadius.circular(8),
+              const ClipRRect(
+                borderRadius: BorderRadius.all(Radius.circular(8)),
                 child: LinearProgressIndicator(
-                  value: progress,
                   minHeight: 7,
-                  backgroundColor: const Color(0xFF203C32),
+                  backgroundColor: Color(0xFF203C32),
                   color: _lime,
                 ),
               ),
@@ -1411,13 +1419,12 @@ class _MagnetHomePageState extends State<MagnetHomePage> {
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Text(
-                    '${formatBytes(_safe(torrent?.totalDone ?? 0))}'
-                    ' of ${formatBytes(_safe(torrent?.totalWanted ?? 0))}',
+                    '${formatBytes(_safe(torrent?.totalDone ?? 0))} received on demand',
                     style: const TextStyle(color: _muted, fontSize: 12),
                   ),
-                  Text(
-                    torrent == null ? '' : 'ETA ${formatEta(torrent)}',
-                    style: const TextStyle(color: _muted, fontSize: 12),
+                  const Text(
+                    'No full download',
+                    style: TextStyle(color: _muted, fontSize: 12),
                   ),
                 ],
               ),
