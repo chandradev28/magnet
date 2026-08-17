@@ -2870,15 +2870,20 @@ TORRENT_API void lt_configure_session(lt_session_t session,
     // apply to libtorrent session — port of btserver.go configure()
     lt::settings_pack sp;
 
-    // port of: bt.config.DisableIPv6 = !settings.BTsets.EnableIPv6
-    if (!cfg.enable_ipv6) {
-        // Do not force every mobile session onto 6881. A fixed port can be
-        // occupied or filtered, and libtorrent uses this socket for incoming
-        // peers, UDP trackers, and DHT. Port 0 lets Android choose a valid
-        // local port; an explicit peers_listen_port remains supported.
-        const int port = cfg.peers_listen_port > 0 ? cfg.peers_listen_port : 0;
-        sp.set_str(lt::settings_pack::listen_interfaces,
-                   "0.0.0.0:" + std::to_string(port));
+    // Keep the listen interface selected during session creation when the
+    // caller requested an ephemeral port. On Android, applying
+    // "0.0.0.0:0" again here makes libtorrent re-enumerate routes while the
+    // session is already running and produces the misleading enum_route
+    // alert. An explicitly requested port is still honored.
+    if (cfg.peers_listen_port > 0) {
+        const auto port = std::to_string(cfg.peers_listen_port);
+        if (cfg.enable_ipv6) {
+            sp.set_str(lt::settings_pack::listen_interfaces,
+                       "0.0.0.0:" + port + ",[::]:" + port);
+        } else {
+            sp.set_str(lt::settings_pack::listen_interfaces,
+                       "0.0.0.0:" + port);
+        }
     }
 
     // port of: bt.config.DisableTCP / DisableUTP

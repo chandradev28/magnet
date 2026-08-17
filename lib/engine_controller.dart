@@ -267,10 +267,29 @@ class EngineController extends ChangeNotifier {
     if (text.length > 300) text = '${text.substring(0, 300)}…';
     _log('native: ${text.replaceFirst('LibtorrentFlutter Alert: ', '')}');
 
-    // A failed listen port explains "traffic but no peers" completely, so
-    // promote it from a log line to a visible error.
+    // Android API 24+ does not expose route enumeration to libtorrent. Its
+    // Android-specific session code deliberately falls back to an
+    // unspecified listen address, but still emits an enum_route alert. That
+    // alert is diagnostic noise, not proof that the listening socket failed.
+    final androidRouteFallback = lower.contains('enum_route') ||
+        lower.contains('operation not supported on transport endpoint');
+    if (androidRouteFallback) {
+      _log(
+          'Android route enumeration unavailable; using best-effort listen socket');
+      return;
+    }
+
+    // A real socket/bind/listen failure explains "traffic but no peers", so
+    // promote it from a log line to a visible error. Keep route-enumeration
+    // warnings above out of this path.
     final failed = lower.contains('fail') || lower.contains('error');
-    if (failed && lower.contains('listen') && error == null) {
+    final socketFailure = lower.contains('sock_bind') ||
+        lower.contains('sock_listen') ||
+        lower.contains('sock_open') ||
+        lower.contains('address already in use') ||
+        lower.contains('failed to bind') ||
+        lower.contains('cannot listen');
+    if (failed && lower.contains('listen') && socketFailure && error == null) {
       _fail('The engine could not open a listening port: $text');
     }
   }
