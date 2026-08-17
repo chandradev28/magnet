@@ -618,7 +618,7 @@ class _MagnetHomePageState extends State<MagnetHomePage> {
         selectedIndex: _selectedTab,
         onDestinationSelected: (index) => setState(() => _selectedTab = index),
         backgroundColor: _ink,
-        indicatorColor: _lime.withOpacity(.18),
+        indicatorColor: _lime.withValues(alpha: .18),
         destinations: const [
           NavigationDestination(
             icon: Icon(Icons.play_circle_outline),
@@ -1091,7 +1091,7 @@ class _MagnetHomePageState extends State<MagnetHomePage> {
               (file) => ListTile(
                 contentPadding: EdgeInsets.zero,
                 leading: CircleAvatar(
-                  backgroundColor: _lime.withOpacity(.14),
+                  backgroundColor: _lime.withValues(alpha: .14),
                   foregroundColor: _lime,
                   child: Icon(
                     _isExternalAudio(file)
@@ -1134,7 +1134,7 @@ class _MagnetHomePageState extends State<MagnetHomePage> {
         padding: const EdgeInsets.all(22),
         child: Column(
           children: [
-            Icon(Icons.waves_rounded, color: _lime.withOpacity(.8), size: 38),
+            Icon(Icons.waves_rounded, color: _lime.withValues(alpha: .8), size: 38),
             const SizedBox(height: 10),
             const Text(
               'Ready when you are',
