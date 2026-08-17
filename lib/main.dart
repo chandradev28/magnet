@@ -63,7 +63,7 @@ class MagnetApp extends StatelessWidget {
           ),
           hintStyle: const TextStyle(color: _muted),
         ),
-        cardTheme: CardTheme(
+        cardTheme: CardThemeData(
           color: _panel,
           margin: EdgeInsets.zero,
           elevation: 0,
