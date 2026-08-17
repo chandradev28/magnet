@@ -15,18 +15,11 @@ import 'messenger.dart';
 import 'native_bridge.dart';
 import 'settings_store.dart';
 
-/// Pausing a torrent aborts in-flight tracker announces and DHT lookups, so
-/// the first nudge waits until the swarm has had a fair chance.
-const firstReannounceAfter = Duration(seconds: 45);
+/// A quiet magnet is still allowed to keep searching. Peer counts are a
+/// momentary connection count, not proof that the DHT or torrent is broken.
+const peerSearchNoticeAfter = Duration(seconds: 60);
 
-/// How often we force a fresh announce after that, while metadata is missing.
-const reannounceEvery = Duration(seconds: 60);
-
-/// Nudging forever guarantees metadata limbo. Stop after this many tries.
-const maxReannounces = 4;
-
-/// How long we tolerate zero peers before telling the user the truth.
-const peerWatchdog = Duration(seconds: 60);
+const playerProbeBytes = 1024 * 1024;
 
 /// Appended to every magnet so peer discovery never depends on the engine's
 /// remote tracker-list download succeeding.
@@ -170,8 +163,6 @@ class EngineController extends ChangeNotifier {
   final Map<int, String> nameOf = <int, String>{};
   final Map<int, List<FileInfo>> filesOf = <int, List<FileInfo>>{};
   final Map<int, DateTime> addedAt = <int, DateTime>{};
-  final Map<int, DateTime> lastAnnounce = <int, DateTime>{};
-  final Map<int, int> reannounces = <int, int>{};
   final Set<int> _autoStarted = <int>{};
   final Set<int> _loadingFiles = <int>{};
   final Set<String> _mutedErrors = <String>{};
@@ -448,11 +439,10 @@ class EngineController extends ChangeNotifier {
     _bump();
   }
 
-  /// Nudges a silent swarm while metadata is missing - sparingly - and says
-  /// something honest when nobody ever answers.
+  /// Keep a quiet swarm visible without declaring DHT failure. Pausing and
+  /// resuming here used to abort in-flight tracker/DHT work and made discovery
+  /// less reliable, especially on mobile networks.
   void _runWatchdogs() {
-    final engine = _engine;
-    if (engine == null) return;
     final now = DateTime.now();
 
     for (final torrent in torrents.values) {
@@ -462,39 +452,10 @@ class EngineController extends ChangeNotifier {
 
       final waited = now.difference(started);
       final peers = safeCount(torrent.numPeers);
-      final nudges = reannounces[torrent.id] ?? 0;
-      final last = lastAnnounce[torrent.id];
-      final due = last == null
-          ? waited > firstReannounceAfter
-          : now.difference(last) > reannounceEvery;
-
-      // Only nudge a torrent that has reached nobody at all. Once peers are
-      // answering, metadata is already on its way and a pause would throw the
-      // in-flight handshakes away.
-      if (due && peers == 0 && nudges < maxReannounces) {
-        lastAnnounce[torrent.id] = now;
-        try {
-          // Pause + resume forces a re-announce to every tracker and a fresh
-          // DHT lookup.
-          engine.pauseTorrent(torrent.id);
-          engine.resumeTorrent(torrent.id);
-          reannounces[torrent.id] = nudges + 1;
-          _log('Re-announced ${torrent.id} (${nudges + 1}/$maxReannounces)');
-        } catch (_) {
-          // Torrent already gone.
-        }
-      }
-
       if (torrent.id == activeTorrentId &&
-          waited > peerWatchdog &&
-          peers == 0 &&
-          error == null) {
-        _fail(
-          'No peers reachable after ${waited.inSeconds}s. The DHT is '
-          'responding but nobody is sharing this info-hash with your '
-          'connection. Try a different magnet, or switch to Wi-Fi — some '
-          'mobile carriers block peer traffic.',
-        );
+          waited > peerSearchNoticeAfter &&
+          peers == 0) {
+        status = 'Still searching trackers and DHT…';
       }
     }
   }
@@ -544,7 +505,6 @@ class EngineController extends ChangeNotifier {
       magnetOf[id] = value;
       nameOf[id] = name;
       addedAt[id] = DateTime.now();
-      reannounces[id] = 0;
       activeTorrentId = id;
       adding = false;
       status = 'Looking for peers and metadata…';
@@ -604,8 +564,6 @@ class EngineController extends ChangeNotifier {
     magnetOf.remove(id);
     nameOf.remove(id);
     addedAt.remove(id);
-    lastAnnounce.remove(id);
-    reannounces.remove(id);
     _autoStarted.remove(id);
     if (activeTorrentId == id) {
       activeTorrentId = torrents.isEmpty ? null : torrents.keys.first;
@@ -693,8 +651,6 @@ class EngineController extends ChangeNotifier {
     magnetOf.remove(oldId);
     nameOf.remove(oldId);
     addedAt.remove(oldId);
-    lastAnnounce.remove(oldId);
-    reannounces.remove(oldId);
     _autoStarted.remove(oldId);
 
     try {
@@ -704,7 +660,6 @@ class EngineController extends ChangeNotifier {
       magnetOf[id] = magnet;
       nameOf[id] = nameFromMagnet(magnet);
       addedAt[id] = DateTime.now();
-      reannounces[id] = 0;
       activeTorrentId = id;
       status = 'Reconnecting to the swarm…';
       _bump();
@@ -854,10 +809,9 @@ class EngineController extends ChangeNotifier {
     }
   }
 
-  /// `StreamState.ready` means the engine hit its full preload target. libmpv
-  /// only needs the container head, but a completed torrent piece is not the
-  /// same thing as a playable HTTP response. Probe the actual local stream
-  /// first; this also advances the native reader and makes readHead real.
+  /// A completed torrent piece is not the same thing as a playable HTTP
+  /// response. Probe the actual local stream first. MP4/MOV files may keep the
+  /// moov index at the end, so verify both ends before handing the URL to mpv.
   Future<bool> _waitForPlayableBuffer(int streamId) async {
     final engine = _engine;
     if (engine == null) return false;
@@ -882,7 +836,7 @@ class EngineController extends ChangeNotifier {
         final now = DateTime.now();
         if (hasHead && now.isAfter(nextProbe)) {
           nextProbe = now.add(const Duration(seconds: 3));
-          final served = await _probePlayableHead(info);
+          final served = await _probePlayableContainer(info);
           if (served) {
             final refreshed = engine.getStreamInfo(streamId);
             if (refreshed != null) {
@@ -903,16 +857,48 @@ class EngineController extends ChangeNotifier {
     return false;
   }
 
-  Future<bool> _probePlayableHead(StreamInfo info) async {
+  Future<bool> _probePlayableContainer(StreamInfo info) async {
     if (info.fileSize <= 0) return false;
-    final probeBytes = info.fileSize < 65536 ? info.fileSize : 65536;
+    final headBytes =
+        info.fileSize < playerProbeBytes ? info.fileSize : playerProbeBytes;
+    final headReady = await _probePlayableRange(
+      info,
+      start: 0,
+      end: headBytes - 1,
+      label: 'head',
+    );
+    if (!headReady) return false;
+
+    final name = playingFile?.name.toLowerCase() ?? '';
+    final needsTail = name.endsWith('.mp4') ||
+        name.endsWith('.m4v') ||
+        name.endsWith('.mov') ||
+        name.endsWith('.3gp');
+    if (!needsTail || info.fileSize <= playerProbeBytes) return true;
+
+    return _probePlayableRange(
+      info,
+      start: info.fileSize - playerProbeBytes,
+      end: info.fileSize - 1,
+      label: 'tail',
+    );
+  }
+
+  Future<bool> _probePlayableRange(
+    StreamInfo info, {
+    required int start,
+    required int end,
+    required String label,
+  }) async {
+    final expected = end - start + 1;
+    if (expected <= 0) return false;
     final client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 8)
       ..idleTimeout = const Duration(seconds: 8);
     try {
       final request = await client.getUrl(Uri.parse(info.url));
       request.headers
-        ..set(HttpHeaders.rangeHeader, 'bytes=0-${probeBytes - 1}')
+        ..set(HttpHeaders.rangeHeader, 'bytes=$start-$end')
         ..set(HttpHeaders.acceptHeader, '*/*');
       final response = await request.close().timeout(
             const Duration(seconds: 45),
@@ -928,13 +914,12 @@ class EngineController extends ChangeNotifier {
         const Duration(seconds: 20),
       )) {
         received += chunk.length;
-        if (received >= probeBytes) break;
+        if (received >= expected) break;
       }
-      _log('Stream probe received ${fmtBytes(received)}');
-      final minimum = probeBytes < 4096 ? probeBytes : 4096;
-      return received >= minimum;
+      _log('Stream $label probe received ${fmtBytes(received)}');
+      return received >= expected;
     } catch (err) {
-      _log('Stream probe failed: $err');
+      _log('Stream $label probe failed: $err');
       return false;
     } finally {
       client.close(force: true);
@@ -945,20 +930,45 @@ class EngineController extends ChangeNotifier {
     final info = stream;
     if (info == null) return;
 
-    final instance = Player();
+    final instance = Player(
+      configuration: const PlayerConfiguration(
+        bufferSize: 16 * 1024 * 1024,
+        logLevel: MPVLogLevel.warn,
+      ),
+    );
     final controller = VideoController(instance);
+    final loadError = Completer<String>();
     final errorSub = instance.stream.error.listen((message) {
       if (message.isEmpty) return;
-      _fail('Player reported: $message');
-      _bump();
+      if (!loadError.isCompleted) loadError.complete(message);
+      if (identical(player, instance)) {
+        _fail('Player reported: $message');
+        _bump();
+      }
     });
+    final tracksReady = instance.stream.tracks
+        .firstWhere(
+          (tracks) => tracks.video.length > 2 || tracks.audio.length > 2,
+        )
+        .then((_) => true);
 
     try {
-      // Open the local HTTP stream only after the native stream has a usable
-      // head. Explicitly call play as well so a platform backend that ignores
-      // Media(..., play: true) still starts immediately.
+      // media_kit's open() queues the URL but returns before mpv has recognized
+      // the container. Wait for a real audio/video track (or a player error)
+      // before publishing the controller and opening the fullscreen route.
       await instance.open(Media(info.url), play: true);
       await instance.play();
+      final recognized = await Future.any<bool>([
+        tracksReady,
+        loadError.future.then((_) => false),
+        Future<bool>.delayed(const Duration(seconds: 30), () => false),
+      ]);
+      if (!recognized) {
+        final detail = loadError.isCompleted
+            ? await loadError.future
+            : 'Timed out while reading the buffered video container.';
+        throw StateError(detail);
+      }
     } catch (err) {
       await errorSub.cancel();
       if (identical(player, instance)) {

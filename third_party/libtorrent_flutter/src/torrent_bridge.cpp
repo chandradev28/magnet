@@ -923,6 +923,7 @@ struct StreamEngine {
 
     std::string make_url() const {
         std::string hash = "0000000000000000000000000000000000000000";
+        std::string extension;
         try {
             if (handle.is_valid()) {
                 auto ih = handle.info_hashes();
@@ -936,9 +937,24 @@ struct StreamEngine {
                 }
                 hash = ss.str().substr(0, 40);
             }
+            if (ti) {
+                std::string filename = std::string(
+                    ti->files().file_name(lt::file_index_t{file_index}));
+                auto dot = filename.find_last_of('.');
+                if (dot != std::string::npos && filename.size() - dot <= 8) {
+                    extension = filename.substr(dot);
+                    for (auto& c : extension)
+                        c = (char)tolower((unsigned char)c);
+                }
+            }
         } catch (...) {}
+        // Keep the real media extension in the URL. libmpv normally detects
+        // formats from the HTTP body/MIME type, but the extension gives its
+        // demuxer a reliable hint while torrent-backed range requests are
+        // still arriving.
         return "http://127.0.0.1:" + std::to_string(server_port)
-             + "/stream/" + hash + "/" + std::to_string(file_index);
+             + "/stream/" + hash + "/" + std::to_string(file_index)
+             + extension;
     }
 
     // signal piece_finished from alert thread
@@ -1954,30 +1970,34 @@ TORRENT_API lt_session_t lt_create_session(const char* iface, int dl, int ul) {
         sp.set_bool(lt::settings_pack::validate_https_trackers, true);
 #endif
 
-        // ── connection speed — get peers fast ──
-        sp.set_int (lt::settings_pack::connection_speed,          200);
-        sp.set_int (lt::settings_pack::torrent_connect_boost,     200);
-        sp.set_bool(lt::settings_pack::smooth_connects,           false);
+        // ── peer connections ──
+        // Use libtorrent 2.1's proven network timing. The old mobile tuning
+        // attempted hundreds of connections at once and timed peers out in
+        // 5-15 seconds. On cellular/Wi-Fi that churned usable peers faster
+        // than they could complete a piece, eventually reporting 0 peers.
+        sp.set_int (lt::settings_pack::connection_speed,          30);
+        sp.set_int (lt::settings_pack::torrent_connect_boost,     30);
+        sp.set_bool(lt::settings_pack::smooth_connects,           true);
         // Session-wide cap. Per-torrent cap (default 25) is what actually
         // governs streaming fanout — see set_max_connections() in
         // lt_start_stream. Keep this comfortably above per-torrent * active.
         sp.set_int (lt::settings_pack::connections_limit,         200);
-        sp.set_int (lt::settings_pack::min_reconnect_time,        5);
+        sp.set_int (lt::settings_pack::min_reconnect_time,        60);
         sp.set_int (lt::settings_pack::max_failcount,             3);
-        sp.set_int (lt::settings_pack::peer_connect_timeout,      5);
-        sp.set_int (lt::settings_pack::handshake_timeout,         5);
+        sp.set_int (lt::settings_pack::peer_connect_timeout,      15);
+        sp.set_int (lt::settings_pack::handshake_timeout,         10);
 
-        // ── timeouts — detect slow/stalled peers quickly for streaming ──
-        sp.set_int (lt::settings_pack::piece_timeout,             5);
-        sp.set_int (lt::settings_pack::request_timeout,           5);
-        sp.set_int (lt::settings_pack::peer_timeout,              15);
-        sp.set_int (lt::settings_pack::inactivity_timeout,        15);
+        // These are the libtorrent 2.1 protocol defaults. In particular,
+        // peer_timeout=120 allows the mandatory keep-alive at 60 seconds;
+        // using 15 seconds disconnected valid peers before that could happen.
+        sp.set_int (lt::settings_pack::piece_timeout,             20);
+        sp.set_int (lt::settings_pack::request_timeout,           60);
+        sp.set_int (lt::settings_pack::peer_timeout,              120);
+        sp.set_int (lt::settings_pack::inactivity_timeout,        600);
 
-        // ── request pipeline — short queue time = fast seek response ──
-        // request_queue_time is SECONDS of outstanding requests per peer.
-        // At 3s, after a priority change peers take up to 3s to drain the
-        // pipe before serving new pieces. 1s = 3x faster seek response.
-        sp.set_int (lt::settings_pack::request_queue_time,        1);
+        // Deadlines still prioritize playback pieces. Keep the normal request
+        // queue deep enough that mobile peers do not idle between blocks.
+        sp.set_int (lt::settings_pack::request_queue_time,        3);
         sp.set_int (lt::settings_pack::max_out_request_queue,     500);
         sp.set_int (lt::settings_pack::max_allowed_in_request_queue, 2000);
 
@@ -2021,7 +2041,10 @@ TORRENT_API lt_session_t lt_create_session(const char* iface, int dl, int ul) {
             "router.bittorrent.com:6881,"
             "dht.transmissionbt.com:6881,"
             "router.utorrent.com:6881");
-        sp.set_int (lt::settings_pack::dht_announce_interval,     60);
+        // A newly added magnet performs discovery immediately. Re-announcing
+        // every minute only burns mobile data; 15 minutes is the upstream
+        // default and does not delay the initial lookup.
+        sp.set_int (lt::settings_pack::dht_announce_interval,     15 * 60);
         sp.set_bool(lt::settings_pack::announce_to_all_trackers,  true);
         sp.set_bool(lt::settings_pack::announce_to_all_tiers,     true);
 
@@ -2030,8 +2053,8 @@ TORRENT_API lt_session_t lt_create_session(const char* iface, int dl, int ul) {
         sp.set_int (lt::settings_pack::active_limit,              10);
         sp.set_int (lt::settings_pack::alert_queue_size,          10000);
         sp.set_bool(lt::settings_pack::close_redundant_connections, true);
-        sp.set_int (lt::settings_pack::peer_turnover,             5);
-        sp.set_int (lt::settings_pack::peer_turnover_interval,    30);
+        sp.set_int (lt::settings_pack::peer_turnover,             4);
+        sp.set_int (lt::settings_pack::peer_turnover_interval,    300);
         sp.set_bool(lt::settings_pack::no_recheck_incomplete_resume, true);
         sp.set_bool(lt::settings_pack::allow_multiple_connections_per_ip, true);
         sp.set_bool(lt::settings_pack::rate_limit_ip_overhead,    false);
@@ -2056,15 +2079,8 @@ TORRENT_API lt_session_t lt_create_session(const char* iface, int dl, int ul) {
         sp.set_bool(lt::settings_pack::prefer_rc4,         false);
         sp.set_int (lt::settings_pack::mixed_mode_algorithm, lt::settings_pack::peer_proportional);
 
-        // ── reciprocity boost ──
-        // Announce pieces ~500 ms before they finish hashing so peers can
-        // start requesting from us before we've even completed the piece.
-        // This raises our reciprocity score and gets us better unchoke
-        // priority from them on the next round — measurably helps streaming
-        // on mid-swarm torrents. Value is in MILLISECONDS, not seconds.
-        // 500 ms is enough for ~3-5× a typical WAN round-trip without
-        // announcing pieces that may still fail the hash check.
-        sp.set_int (lt::settings_pack::predictive_piece_announce, 500);
+        // Never advertise a piece before it has passed its hash check.
+        sp.set_int (lt::settings_pack::predictive_piece_announce, 0);
 
         // ── tracker discovery ──
         // UDP trackers answer ~10× faster than HTTP and have lower overhead
