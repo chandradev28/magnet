@@ -33,6 +33,32 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Set up Android NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r26d
+
+      - name: Cache patched Android native bridge
+        uses: actions/cache@v4
+        id: native-cache
+        with:
+          path: third_party/libtorrent_flutter/prebuilt/android/arm64-v8a
+          key: libtorrent-android-arm64-v8a-r26d-${{ hashFiles('third_party/libtorrent_flutter/src/torrent_bridge.cpp', 'scripts/build_android_native.sh') }}
+
+      - name: Build patched Android native bridge
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        env:
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build
+          chmod +x scripts/build_android_native.sh
+          scripts/build_android_native.sh arm64-v8a
+
+      - name: Verify patched native bridge is present
+        run: test -s third_party/libtorrent_flutter/prebuilt/android/arm64-v8a/liblibtorrent_flutter.so
+
       - name: Check formatting
         continue-on-error: true
         run: dart format --output=none --set-exit-if-changed lib test
@@ -49,7 +75,8 @@ jobs:
           flutter build apk --release \
             --split-per-abi \
             --build-number=${{ github.run_number }} \
-            -PlibtorrentFlutterAbis=arm64-v8a
+            -PlibtorrentFlutterAbis=arm64-v8a \
+            -PlibtorrentFlutterSkipDownload=true
 
       - name: Upload APK
         uses: actions/upload-artifact@v4

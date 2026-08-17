@@ -195,10 +195,9 @@ packages:
   libtorrent_flutter:
     dependency: "direct main"
     description:
-      name: libtorrent_flutter
-      sha256: fd954704312c6990294e7bcb40ed5bcf6c9edf8976a547649de32100e0523199
-      url: "https://pub.dev"
-    source: hosted
+      path: "third_party/libtorrent_flutter"
+      relative: true
+    source: path
     version: "2.0.0"
   lints:
     dependency: transitive
@@ -297,7 +296,7 @@ packages:
     source: hosted
     version: "1.15.0"
   package_info_plus:
-    dependency: "direct overridden"
+    dependency: transitive
     description:
       name: package_info_plus
       sha256: "16eee997588c60225bda0488b6dcfac69280a6b7a3cf02c741895dd370a02968"
@@ -614,7 +613,7 @@ packages:
     source: hosted
     version: "14.2.4"
   wakelock_plus:
-    dependency: "direct overridden"
+    dependency: transitive
     description:
       name: wakelock_plus
       sha256: a474e314c3e8fb5adef1f9ae2d247e57467ad557fa7483a2b895bc1b421c5678

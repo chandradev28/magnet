@@ -13,7 +13,11 @@ dependencies:
 
   cupertino_icons: ^1.0.8
   android_intent_plus: ^5.3.1
-  libtorrent_flutter: ^2.0.0
+  # Keep the native bridge in this repository so stream lifetime and Android
+  # networking fixes ship with the app instead of depending on a prebuilt
+  # package binary we cannot patch.
+  libtorrent_flutter:
+    path: third_party/libtorrent_flutter
   media_kit: ^1.2.6
   media_kit_video: ^2.0.1
   media_kit_libs_video: ^1.0.7

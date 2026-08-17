@@ -31,6 +31,18 @@ const peerWatchdog = Duration(seconds: 60);
 /// Appended to every magnet so peer discovery never depends on the engine's
 /// remote tracker-list download succeeding.
 const fallbackTrackers = <String>[
+  // Keep HTTP(S) entries in addition to UDP. Some mobile networks allow web
+  // traffic but drop UDP tracker/DHT packets, which otherwise leaves every
+  // magnet stuck at zero peers.
+  'https://tracker.zhuqiy.com:443/announce',
+  'https://tracker.yemekyedim.com:443/announce',
+  'https://tracker.pmman.tech:443/announce',
+  'https://tracker.bt4g.com:443/announce',
+  'http://tracker2.dler.org:80/announce',
+  'http://tracker.dler.org:6969/announce',
+  'http://tracker.bt4g.com:2095/announce',
+  'http://tracker.bittor.pw:1337/announce',
+  'http://tr.nyacat.pw:80/announce',
   'udp://tracker.opentrackr.org:1337/announce',
   'udp://open.tracker.cl:1337/announce',
   'udp://open.demonii.com:1337/announce',
@@ -142,6 +154,7 @@ class EngineController extends ChangeNotifier {
   StreamSubscription<Duration>? _durationSub;
   Timer? _pollTimer;
   Timer? _positionTimer;
+  Future<void>? _trackerWarmup;
   bool _disposed = false;
 
   bool ready = false;
@@ -282,12 +295,15 @@ class EngineController extends ChangeNotifier {
     try {
       if (!LibtorrentFlutter.isInitialized) {
         await LibtorrentFlutter.init(
-          fetchTrackers: true,
+          // The package fetches trackers fire-and-forget. Warm them before
+          // the first magnet is added so a fast first tap is not DHT-only.
+          fetchTrackers: false,
           pollInterval: const Duration(milliseconds: 500),
         );
       }
       final engine = LibtorrentFlutter.instance;
       _engine = engine;
+      _trackerWarmup = _warmTrackers();
       applySettings();
 
       try {
@@ -308,6 +324,18 @@ class EngineController extends ChangeNotifier {
       _fail('The torrent engine could not start: $err');
     }
     _bump();
+  }
+
+  Future<void> _warmTrackers() async {
+    try {
+      await TrackerManager.fetchBestTrackers().timeout(
+        const Duration(seconds: 6),
+      );
+      _log('Tracker list ready');
+    } catch (err) {
+      // Built-in fallback trackers still work if the live list is unavailable.
+      _log('Tracker list unavailable: $err');
+    }
   }
 
   /// Starts from the engine's own defaults and overrides only what streaming
@@ -468,8 +496,10 @@ class EngineController extends ChangeNotifier {
       return;
     }
 
+    final liveIds = engine.torrents.keys.toSet();
     for (final entry in magnetOf.entries) {
-      if (infoHashOf(entry.value) == infoHashOf(value)) {
+      if (liveIds.contains(entry.key) &&
+          infoHashOf(entry.value) == infoHashOf(value)) {
         select(entry.key);
         showMessage('Already in your torrents.');
         return;
@@ -483,6 +513,8 @@ class EngineController extends ChangeNotifier {
     _bump();
 
     try {
+      final trackerWarmup = _trackerWarmup;
+      if (trackerWarmup != null) await trackerWarmup;
       final uri = settings.injectTrackers ? withFallbackTrackers(value) : value;
       // Streaming is the only supported magnet mode. The third argument is
       // libtorrent_flutter's streamOnly flag; leaving it at its default makes
@@ -575,23 +607,105 @@ class EngineController extends ChangeNotifier {
 
     _loadingFiles.add(id);
     try {
-      for (var attempt = 0; attempt < 8; attempt++) {
-        final files = engine.getFiles(id);
-        if (files.isNotEmpty) {
-          filesOf[id] = files;
-          _log('Torrent $id: ${files.length} file(s)');
-          _bump();
-          _maybeAutoStart(id);
-          return;
-        }
-        await Future<void>.delayed(const Duration(milliseconds: 400));
-        if (_disposed) return;
+      final files = await _waitForFiles(id);
+      if (files.isNotEmpty) {
+        _log('Torrent $id: ${files.length} file(s)');
+        _bump();
+        _maybeAutoStart(id);
+        return;
       }
       _log('Torrent $id reported metadata but no files');
     } catch (err) {
       _log('File list failed for $id: $err');
     } finally {
       _loadingFiles.remove(id);
+    }
+  }
+
+  Future<List<FileInfo>> _waitForFiles(
+    int id, {
+    Duration timeout = const Duration(seconds: 4),
+  }) async {
+    final engine = _engine;
+    if (engine == null) return const <FileInfo>[];
+    final deadline = DateTime.now().add(timeout);
+    while (!_disposed && DateTime.now().isBefore(deadline)) {
+      try {
+        final files = engine.getFiles(id);
+        if (files.isNotEmpty) {
+          filesOf[id] = files;
+          return files;
+        }
+      } catch (_) {
+        // Metadata may be visible one poll before the file storage is ready.
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+    }
+    return const <FileInfo>[];
+  }
+
+  FileInfo? _matchRecoveredFile(List<FileInfo> files, FileInfo requested) {
+    for (final candidate in files) {
+      if (candidate.index == requested.index &&
+          candidate.name == requested.name) {
+        return candidate;
+      }
+    }
+    for (final candidate in files) {
+      if (candidate.index == requested.index) return candidate;
+    }
+    for (final candidate in files) {
+      if (candidate.name == requested.name) return candidate;
+    }
+    for (final candidate in files) {
+      if (isPlayableFile(candidate)) return candidate;
+    }
+    return null;
+  }
+
+  Future<FileInfo?> _recoverDeadTorrent(int oldId, FileInfo requested) async {
+    final engine = _engine;
+    final magnet = magnetOf[oldId];
+    if (engine == null || magnet == null) return null;
+
+    _log('Torrent $oldId was removed with its stream; reconnecting');
+    torrents.remove(oldId);
+    filesOf.remove(oldId);
+    magnetOf.remove(oldId);
+    nameOf.remove(oldId);
+    addedAt.remove(oldId);
+    lastAnnounce.remove(oldId);
+    reannounces.remove(oldId);
+    _autoStarted.remove(oldId);
+
+    try {
+      final uri =
+          settings.injectTrackers ? withFallbackTrackers(magnet) : magnet;
+      final id = engine.addMagnet(uri, null, true);
+      magnetOf[id] = magnet;
+      nameOf[id] = nameFromMagnet(magnet);
+      addedAt[id] = DateTime.now();
+      reannounces[id] = 0;
+      activeTorrentId = id;
+      status = 'Reconnecting to the swarm…';
+      _bump();
+
+      final files = await _waitForFiles(
+        id,
+        timeout: settings.bufferTimeout,
+      );
+      final recovered = _matchRecoveredFile(files, requested);
+      if (recovered == null) {
+        _fail(
+          'The torrent was reconnected, but its video metadata is not ready.',
+        );
+        _bump();
+      }
+      return recovered;
+    } catch (err) {
+      _fail('The torrent could not be reconnected: $err');
+      _bump();
+      return null;
     }
   }
 
@@ -625,7 +739,8 @@ class EngineController extends ChangeNotifier {
   // ── Streaming ─────────────────────────────────────────────────
 
   Future<void> startStream(FileInfo file, {int? torrentId}) async {
-    final id = torrentId ?? activeTorrentId;
+    var id = torrentId ?? activeTorrentId;
+    var selectedFile = file;
     final engine = _engine;
     if (id == null || engine == null) return;
 
@@ -645,21 +760,41 @@ class EngineController extends ChangeNotifier {
     buffering = true;
     bufferTimedOut = false;
     error = null;
-    playingFile = file;
-    status = 'Opening ${fileNameOf(file.name)}…';
+    playingFile = selectedFile;
+    status = 'Opening ${fileNameOf(selectedFile.name)}…';
     _bump();
 
     try {
       if (torrents[id]?.isPaused == true) engine.resumeTorrent(id);
 
-      final info = engine.startStream(
-        id,
-        fileIndex: file.index,
-        maxCacheBytes: settings.cacheBytes,
-      );
+      late StreamInfo info;
+      try {
+        info = engine.startStream(
+          id,
+          fileIndex: selectedFile.index,
+          maxCacheBytes: settings.cacheBytes,
+        );
+      } catch (err) {
+        final lower = err.toString().toLowerCase();
+        if (!lower.contains('torrent not found')) rethrow;
+        final recovered = await _recoverDeadTorrent(id, selectedFile);
+        if (recovered == null) {
+          buffering = false;
+          _bump();
+          return;
+        }
+        id = activeTorrentId ?? id;
+        selectedFile = recovered;
+        playingFile = selectedFile;
+        info = engine.startStream(
+          id,
+          fileIndex: selectedFile.index,
+          maxCacheBytes: settings.cacheBytes,
+        );
+      }
       stream = info;
       status = 'Buffering the opening pieces…';
-      _log('Stream ${info.id} started for file ${file.index}');
+      _log('Stream ${info.id} started for file ${selectedFile.index}');
       _bump();
 
       try {
