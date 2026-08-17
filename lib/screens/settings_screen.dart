@@ -30,6 +30,12 @@ class SettingsScreen extends StatelessWidget {
             _card('PLAYBACK', [
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
+                value: settings.darkMode,
+                onChanged: (value) => settings.update(darkMode: value),
+                title: const Text('Dark mode'),
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
                 value: settings.autoPlay,
                 onChanged: (value) => settings.update(autoPlay: value),
                 title: const Text('Start playing automatically'),
@@ -47,9 +53,9 @@ class SettingsScreen extends StatelessWidget {
                 contentPadding: EdgeInsets.zero,
                 value: settings.backgroundService,
                 onChanged: (value) => settings.update(backgroundService: value),
-                title: const Text('Keep downloading in the background'),
+                title: const Text('Keep the stream alive in background'),
                 subtitle: const Text(
-                  'Shows an ongoing notification while a stream is open',
+                  'Keeps the player session active with a notification',
                 ),
               ),
             ]),
@@ -103,7 +109,8 @@ class SettingsScreen extends StatelessWidget {
                 max: 90,
                 divisions: 44,
                 display: '${settings.preloadPct}% of cache',
-                onChanged: (value) => settings.update(preloadPct: value.round()),
+                onChanged: (value) =>
+                    settings.update(preloadPct: value.round()),
               ),
               _slider(
                 label: 'Read-ahead window',

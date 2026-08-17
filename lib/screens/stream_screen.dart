@@ -89,11 +89,10 @@ class _StreamScreenState extends State<StreamScreen> {
           padding: const EdgeInsets.fromLTRB(20, 18, 20, 32),
           children: [
             screenHeading(
-              kicker: 'PLAY THE PIECES.',
-              title: "Stream what's yours.",
+              kicker: 'STREAM',
+              title: 'Play a magnet.',
               subtitle:
-                  'Paste a magnet link. Playback starts as soon as the opening '
-                  'pieces land — no waiting for the full download.',
+                  'Only the video pieces needed for playback are fetched.',
             ),
             const SizedBox(height: 20),
             _magnetInput(),
@@ -167,7 +166,7 @@ class _StreamScreenState extends State<StreamScreen> {
                   child: FilledButton.icon(
                     onPressed: appEngine.ready ? _submit : null,
                     icon: const Icon(Icons.play_arrow_rounded),
-                    label: const Text('Start streaming'),
+                    label: const Text('Play magnet'),
                   ),
                 ),
                 const SizedBox(width: 10),
@@ -194,7 +193,8 @@ class _StreamScreenState extends State<StreamScreen> {
           children: [
             Row(
               children: [
-                const Icon(Icons.error_outline_rounded, color: danger, size: 20),
+                const Icon(Icons.error_outline_rounded,
+                    color: danger, size: 20),
                 const SizedBox(width: 8),
                 const Text(
                   'Something needs your attention',
@@ -376,12 +376,13 @@ class _StreamScreenState extends State<StreamScreen> {
               ],
             ),
             const SizedBox(height: 12),
-            progressBar(pct == 0 ? null : pct),
+            progressBar(pct),
             const SizedBox(height: 8),
             Text(
               stream == null
                   ? 'Starting the stream server…'
                   : 'Buffer ${(pct * 100).toStringAsFixed(0)}% · '
+                      '${stream.bufferSeconds.toStringAsFixed(1)}s ahead · '
                       '${stream.bufferPieces}/${stream.readaheadWindow} pieces · '
                       '${safeCount(stream.activePeers)} stream peers',
               style: const TextStyle(color: muted, fontSize: 12),
@@ -404,18 +405,54 @@ class _StreamScreenState extends State<StreamScreen> {
     final file = appEngine.playingFile;
     return Card(
       color: panelRaised,
-      child: ListTile(
-        leading: const Icon(Icons.play_circle_rounded, color: lime, size: 32),
-        title: Text(
-          file == null ? 'Playing' : fileNameOf(file.name),
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Column(
+          children: [
+            ListTile(
+              leading: const Icon(
+                Icons.play_circle_rounded,
+                color: lime,
+                size: 32,
+              ),
+              title: Text(
+                file == null ? 'Playing' : fileNameOf(file.name),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontWeight: FontWeight.w700,
+                  fontSize: 14,
+                ),
+              ),
+              subtitle: const Text('Tap to open the player'),
+              trailing: const Icon(Icons.chevron_right_rounded),
+              onTap: _openPlayer,
+            ),
+            if (appEngine.stream != null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                child: _bufferSummary(appEngine.stream!),
+              ),
+          ],
         ),
-        subtitle: const Text('Tap to return to the player'),
-        trailing: const Icon(Icons.chevron_right_rounded),
-        onTap: _openPlayer,
       ),
+    );
+  }
+
+  Widget _bufferSummary(StreamInfo stream) {
+    final pct = stream.bufferPct.clamp(0.0, 1.0);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        progressBar(pct),
+        const SizedBox(height: 6),
+        Text(
+          'Buffer ${(pct * 100).toStringAsFixed(0)}% · '
+          '${stream.bufferSeconds.toStringAsFixed(1)}s ahead · '
+          '${safeCount(stream.activePeers)} peers',
+          style: const TextStyle(color: muted, fontSize: 11),
+        ),
+      ],
     );
   }
 

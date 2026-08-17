@@ -11,62 +11,61 @@ const track = Color(0xFF203C32);
 const chipBorder = Color(0xFF2B4B3E);
 const errorPanel = Color(0xFF2A1717);
 
-ThemeData buildMagnetTheme() {
+ThemeData buildMagnetTheme({Brightness brightness = Brightness.dark}) {
+  final dark = brightness == Brightness.dark;
+  final background = dark ? ink : const Color(0xFFF4F8F5);
+  final surface = dark ? panel : Colors.white;
+  final raised = dark ? panelRaised : const Color(0xFFE7F0EA);
+  final border = dark ? line : const Color(0xFFD0DED5);
+  final text = dark ? Colors.white : const Color(0xFF173127);
+  final secondary = dark ? muted : const Color(0xFF5C7469);
+  final progressTrack = dark ? track : const Color(0xFFD6E5DB);
   final scheme = ColorScheme.fromSeed(
     seedColor: lime,
-    brightness: Brightness.dark,
-    surface: ink,
+    brightness: brightness,
+    surface: background,
   );
 
   return ThemeData(
     colorScheme: scheme,
-    scaffoldBackgroundColor: ink,
+    scaffoldBackgroundColor: background,
     useMaterial3: true,
-    appBarTheme: const AppBarTheme(
-      backgroundColor: ink,
-      foregroundColor: Colors.white,
+    appBarTheme: AppBarTheme(
+      backgroundColor: background,
+      foregroundColor: text,
       elevation: 0,
     ),
-    snackBarTheme: const SnackBarThemeData(
-      backgroundColor: panelRaised,
-      contentTextStyle: TextStyle(color: Colors.white),
+    snackBarTheme: SnackBarThemeData(
+      backgroundColor: raised,
+      contentTextStyle: TextStyle(color: text),
       behavior: SnackBarBehavior.floating,
     ),
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
-      fillColor: panel,
+      fillColor: surface,
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(18),
         borderSide: BorderSide.none,
       ),
       enabledBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(18),
-        borderSide: const BorderSide(color: line),
+        borderSide: BorderSide(color: border),
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(18),
         borderSide: const BorderSide(color: lime, width: 1.4),
       ),
-      hintStyle: const TextStyle(color: muted),
+      hintStyle: TextStyle(color: secondary),
     ),
-    cardTheme: CardThemeData(
-      color: panel,
-      margin: EdgeInsets.zero,
-      elevation: 0,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(24),
-        side: const BorderSide(color: line),
-      ),
+    listTileTheme: ListTileThemeData(
+      textColor: text,
+      iconColor: secondary,
     ),
-    listTileTheme: const ListTileThemeData(
-      textColor: Colors.white,
-      iconColor: muted,
-    ),
-    sliderTheme: const SliderThemeData(
+    sliderTheme: SliderThemeData(
       activeTrackColor: lime,
-      inactiveTrackColor: track,
+      inactiveTrackColor: progressTrack,
       thumbColor: lime,
     ),
-    dividerTheme: const DividerThemeData(color: line),
+    dividerTheme: DividerThemeData(color: border),
   );
 }

@@ -106,14 +106,13 @@ String withFallbackTrackers(String magnet) {
   final existing = RegExp(r'[?&]tr=([^&]*)', caseSensitive: false)
       .allMatches(magnet)
       .map((match) {
-        final raw = match.group(1) ?? '';
-        try {
-          return Uri.decodeComponent(raw).toLowerCase();
-        } catch (_) {
-          return raw.toLowerCase();
-        }
-      })
-      .toSet();
+    final raw = match.group(1) ?? '';
+    try {
+      return Uri.decodeComponent(raw).toLowerCase();
+    } catch (_) {
+      return raw.toLowerCase();
+    }
+  }).toSet();
 
   final buffer = StringBuffer(magnet);
   for (final tracker in fallbackTrackers) {
@@ -299,8 +298,7 @@ class EngineController extends ChangeNotifier {
 
       _torrentSub = engine.torrentUpdates.listen(_absorb);
       _streamSub = engine.streamUpdates.listen(_absorbStreams);
-      _pollTimer =
-          Timer.periodic(const Duration(seconds: 1), (_) => _tick());
+      _pollTimer = Timer.periodic(const Duration(seconds: 1), (_) => _tick());
 
       ready = true;
       error = null;
@@ -485,9 +483,11 @@ class EngineController extends ChangeNotifier {
     _bump();
 
     try {
-      final uri =
-          settings.injectTrackers ? withFallbackTrackers(value) : value;
-      final id = engine.addMagnet(uri);
+      final uri = settings.injectTrackers ? withFallbackTrackers(value) : value;
+      // Streaming is the only supported magnet mode. The third argument is
+      // libtorrent_flutter's streamOnly flag; leaving it at its default makes
+      // every magnet behave like a background download.
+      final id = engine.addMagnet(uri, null, true);
       final name = nameFromMagnet(value);
 
       magnetOf[id] = value;
@@ -497,7 +497,7 @@ class EngineController extends ChangeNotifier {
       activeTorrentId = id;
       adding = false;
       status = 'Looking for peers and metadata…';
-      _log('Added torrent $id');
+      _log('Added stream-only torrent $id');
       _bump();
 
       await store.addHistory(
@@ -607,13 +607,19 @@ class EngineController extends ChangeNotifier {
   }
 
   FileInfo? bestFileFor(int id) {
+    final videos = videoFilesFor(id);
     final files = filesOf[id] ?? const <FileInfo>[];
-    final videos = files.where((file) => isVideoFile(file.name)).toList();
     final pool =
         videos.isNotEmpty ? videos : files.where(isPlayableFile).toList();
     if (pool.isEmpty) return null;
     pool.sort((a, b) => b.size.compareTo(a.size));
     return pool.first;
+  }
+
+  List<FileInfo> videoFilesFor(int id) {
+    final files = filesOf[id] ?? const <FileInfo>[];
+    return files.where((file) => isVideoFile(file.name)).toList()
+      ..sort((a, b) => b.size.compareTo(a.size));
   }
 
   // ── Streaming ─────────────────────────────────────────────────
@@ -723,20 +729,41 @@ class EngineController extends ChangeNotifier {
 
     final instance = Player();
     final controller = VideoController(instance);
-    _playerErrorSub = instance.stream.error.listen((message) {
+    final errorSub = instance.stream.error.listen((message) {
       if (message.isEmpty) return;
       _fail('Player reported: $message');
       _bump();
     });
 
+    try {
+      // Open the local HTTP stream only after the native stream has a usable
+      // head. Explicitly call play as well so a platform backend that ignores
+      // Media(..., play: true) still starts immediately.
+      await instance.open(Media(info.url), play: true);
+      await instance.play();
+    } catch (err) {
+      await errorSub.cancel();
+      if (identical(player, instance)) {
+        player = null;
+        videoController = null;
+        buffering = false;
+      }
+      await instance.dispose();
+      _fail('Video player could not open this stream: $err');
+      _bump();
+      return;
+    }
+
+    // Publish the controller only after the media URL has opened and play was
+    // requested. The stream screen uses this state transition to navigate to
+    // fullscreen, so a failed open cannot leave a blank player route behind.
     player = instance;
     videoController = controller;
     buffering = false;
     bufferTimedOut = false;
     status = '';
+    _playerErrorSub = errorSub;
     _bump();
-
-    await instance.open(Media(info.url), play: true);
 
     if (settings.backgroundService) {
       await NativeBridge.startService(

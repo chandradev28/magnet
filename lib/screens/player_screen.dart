@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:libtorrent_flutter/libtorrent_flutter.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
@@ -65,6 +66,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
               style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
             ),
             actions: [
+              if (engine.playableFiles.length > 1) _fileMenu(engine),
               if (player != null) _trackMenus(player, engine),
               IconButton(
                 tooltip: 'Open in another player',
@@ -128,6 +130,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
               ' · ${safeCount(engine.stream?.activePeers ?? 0)} stream peers',
               style: const TextStyle(color: muted, fontSize: 12),
             ),
+            const SizedBox(height: 16),
+            _bufferProgress(engine.stream),
             const SizedBox(height: 20),
             TextButton(
               onPressed: _stop,
@@ -145,19 +149,71 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final buffer = stream?.bufferPct ?? 0;
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: .55),
+        color: Colors.black.withOpacity(.55),
         borderRadius: BorderRadius.circular(12),
       ),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        child: Text(
-          '${fmtSpeed(safeCount(torrent?.downloadRate ?? 0))}  ·  '
-          '${safeCount(torrent?.numPeers ?? 0)}P/'
-          '${safeCount(torrent?.numSeeds ?? 0)}S  ·  '
-          'buffer ${(buffer * 100).toStringAsFixed(0)}%',
-          style: const TextStyle(fontSize: 11, color: Colors.white),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'buffer ${(buffer * 100).toStringAsFixed(0)}% · '
+              '${stream?.bufferSeconds.toStringAsFixed(1) ?? '0.0'}s ahead',
+              style: const TextStyle(fontSize: 11, color: Colors.white),
+            ),
+            const SizedBox(height: 6),
+            SizedBox(
+              width: 160,
+              child: _bufferProgress(stream),
+            ),
+            const SizedBox(height: 5),
+            Text(
+              '${fmtSpeed(safeCount(torrent?.downloadRate ?? 0))}  ·  '
+              '${safeCount(torrent?.numPeers ?? 0)}P/'
+              '${safeCount(torrent?.numSeeds ?? 0)}S',
+              style: const TextStyle(fontSize: 10, color: Colors.white70),
+            ),
+          ],
         ),
       ),
+    );
+  }
+
+  Widget _bufferProgress(StreamInfo? stream) {
+    final value = stream?.bufferPct.clamp(0.0, 1.0) ?? 0.0;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(4),
+      child: LinearProgressIndicator(
+        value: value,
+        minHeight: 5,
+        backgroundColor: Colors.white24,
+        color: lime,
+      ),
+    );
+  }
+
+  Widget _fileMenu(EngineController engine) {
+    return PopupMenuButton<int>(
+      tooltip: 'Videos',
+      icon: const Icon(Icons.video_library_outlined),
+      itemBuilder: (context) => [
+        for (final file in engine.playableFiles)
+          PopupMenuItem<int>(
+            value: file.index,
+            child: Text(
+              fileNameOf(file.name),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+      ],
+      onSelected: (index) {
+        final match = engine.playableFiles.where(
+          (file) => file.index == index,
+        );
+        if (match.isNotEmpty) engine.startStream(match.first);
+      },
     );
   }
 

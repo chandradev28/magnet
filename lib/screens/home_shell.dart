@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import '../app_state.dart';
 import '../messenger.dart';
 import '../native_bridge.dart';
-import '../theme.dart';
 import 'library_screen.dart';
 import 'settings_screen.dart';
 import 'stream_screen.dart';
@@ -57,33 +56,21 @@ class _HomeShellState extends State<HomeShell> {
         return Scaffold(
           appBar: AppBar(
             titleSpacing: 20,
-            title: Row(
-              children: [
-                Container(
-                  width: 34,
-                  height: 34,
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    color: lime,
-                    borderRadius: BorderRadius.circular(11),
-                  ),
-                  child: const Text(
-                    'M',
-                    style: TextStyle(color: ink, fontWeight: FontWeight.w900),
-                  ),
-                ),
-                const SizedBox(width: 11),
-                const Text(
-                  'magnet',
-                  style: TextStyle(fontWeight: FontWeight.w800),
-                ),
-              ],
-            ),
+            title: const SizedBox.shrink(),
             actions: [
-              AnimatedBuilder(
-                animation: appEngine,
-                builder: (context, _) => _statusPill(),
+              IconButton(
+                tooltip:
+                    appSettings.darkMode ? 'Use light mode' : 'Use dark mode',
+                onPressed: () => appSettings.update(
+                  darkMode: !appSettings.darkMode,
+                ),
+                icon: Icon(
+                  appSettings.darkMode
+                      ? Icons.light_mode_outlined
+                      : Icons.dark_mode_outlined,
+                ),
               ),
+              const SizedBox(width: 8),
             ],
           ),
           body: SafeArea(
@@ -101,8 +88,9 @@ class _HomeShellState extends State<HomeShell> {
           bottomNavigationBar: NavigationBar(
             selectedIndex: tab,
             onDestinationSelected: (index) => selectedTab.value = index,
-            backgroundColor: ink,
-            indicatorColor: lime.withValues(alpha: .18),
+            backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+            indicatorColor:
+                Theme.of(context).colorScheme.primary.withOpacity(.18),
             destinations: const <Widget>[
               NavigationDestination(
                 icon: Icon(Icons.play_circle_outline),
@@ -128,35 +116,6 @@ class _HomeShellState extends State<HomeShell> {
           ),
         );
       },
-    );
-  }
-
-  Widget _statusPill() {
-    final count = appEngine.torrents.length;
-    final ready = appEngine.ready;
-    return Padding(
-      padding: const EdgeInsets.only(right: 16),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
-        decoration: BoxDecoration(
-          color: panel,
-          borderRadius: BorderRadius.circular(999),
-          border: Border.all(color: line),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.circle, size: 9, color: ready ? lime : Colors.orange),
-            const SizedBox(width: 7),
-            Text(
-              ready
-                  ? (count == 0 ? 'engine ready' : '$count active')
-                  : 'starting',
-              style: const TextStyle(color: muted, fontSize: 12),
-            ),
-          ],
-        ),
-      ),
     );
   }
 }

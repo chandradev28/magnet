@@ -1,8 +1,8 @@
 # magnet
 
-A native torrent streaming player for Android. Paste a magnet link and playback
-starts as soon as the opening pieces arrive — there is no wait for the full
-download.
+A native, stream-only torrent player for Android. Paste a magnet link and
+playback starts as soon as the opening pieces arrive — the app does not run a
+full background download.
 
 ## What it does
 
@@ -15,11 +15,11 @@ download.
   magnet, and a watchdog re-announces while metadata is still missing.
 - **Real player** — fullscreen route with rotation, embedded and external audio
   and subtitle tracks, resume, and a live overlay of stream health.
-- **Multiple torrents** — add several magnets, pause, resume, remove with or
-  without deleting files.
+- **Multiple torrents** — add several magnets and choose any video file to
+  play; sessions remain stream-only.
 - **Library** — saved magnets, recent history, and per-file resume positions.
-- **Background downloads** — a foreground service keeps the swarm alive when the
-  app is not in front.
+- **Background playback** — a foreground service keeps the active stream alive
+  when the app is not in front.
 - **Magnet link intake** — magnet links tapped in a browser or shared from
   another app open directly in the app.
 - **Diagnostics** — stream state, read head, buffer pieces, re-announce count,

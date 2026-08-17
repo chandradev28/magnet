@@ -24,10 +24,9 @@ class TorrentsScreen extends StatelessWidget {
           padding: const EdgeInsets.fromLTRB(20, 18, 20, 32),
           children: [
             screenHeading(
-              kicker: 'THE SWARM',
-              title: 'Your torrents.',
-              subtitle: 'Pause, resume or drop anything in the session. '
-                  'Downloads keep running while you use other apps.',
+              kicker: 'TORRENTS',
+              title: 'Your streams.',
+              subtitle: 'Stream-only sessions and their playable files.',
             ),
             const SizedBox(height: 20),
             if (torrents.isEmpty)
@@ -51,8 +50,8 @@ class TorrentsScreen extends StatelessWidget {
   Widget _torrentCard(BuildContext context, TorrentInfo torrent) {
     final engine = appEngine;
     final active = engine.activeTorrentId == torrent.id;
-    final remaining = torrent.totalWanted - torrent.totalDone;
     final best = engine.bestFileFor(torrent.id);
+    final videos = engine.videoFilesFor(torrent.id);
 
     return Card(
       color: active ? panelRaised : panel,
@@ -90,10 +89,8 @@ class TorrentsScreen extends StatelessWidget {
             const SizedBox(height: 8),
             Text(
               torrent.hasMetadata
-                  ? '${(torrent.progress * 100).toStringAsFixed(1)}% · '
-                      '${fmtBytes(torrent.totalDone)}/'
-                      '${fmtBytes(torrent.totalWanted)} · '
-                      '${fmtEta(remaining, torrent.downloadRate)} left'
+                  ? '${fmtBytes(torrent.totalDone)} received · '
+                      '${fmtSpeed(safeCount(torrent.downloadRate))}'
                   : 'Waiting for metadata · '
                       '${engine.waitedLabelFor(torrent.id)} elapsed',
               style: const TextStyle(color: muted, fontSize: 12),
@@ -132,6 +129,12 @@ class TorrentsScreen extends StatelessWidget {
               ],
             ),
             const Divider(height: 24),
+            if (videos.isNotEmpty) ...[
+              kickerText('VIDEO FILES'),
+              const SizedBox(height: 6),
+              for (final file in videos) _videoFileTile(torrent, file),
+              const Divider(height: 18),
+            ],
             Row(
               children: [
                 TextButton.icon(
@@ -180,6 +183,41 @@ class TorrentsScreen extends StatelessWidget {
     );
   }
 
+  Widget _videoFileTile(TorrentInfo torrent, FileInfo file) {
+    final playing = appEngine.activeTorrentId == torrent.id &&
+        appEngine.playingFile?.index == file.index;
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      dense: true,
+      leading: const Icon(Icons.movie_outlined, color: lime),
+      title: Text(
+        fileNameOf(file.name),
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(fontSize: 13),
+      ),
+      subtitle: Text(
+        fmtBytes(file.size),
+        style: const TextStyle(color: muted, fontSize: 11),
+      ),
+      trailing: IconButton(
+        tooltip: playing ? 'Playing' : 'Play',
+        onPressed: playing
+            ? null
+            : () {
+                selectedTab.value = 0;
+                appEngine.startStream(file, torrentId: torrent.id);
+              },
+        icon: Icon(
+          playing
+              ? Icons.graphic_eq_rounded
+              : Icons.play_circle_outline_rounded,
+          color: lime,
+        ),
+      ),
+    );
+  }
+
   Future<void> _confirmRemove(BuildContext context, TorrentInfo torrent) async {
     final choice = await showDialog<String>(
       context: context,
@@ -195,13 +233,9 @@ class TorrentsScreen extends StatelessWidget {
             child: const Text('Cancel'),
           ),
           TextButton(
-            onPressed: () => Navigator.pop(context, 'keep'),
-            child: const Text('Remove, keep files'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, 'delete'),
+            onPressed: () => Navigator.pop(context, 'remove'),
             child: const Text(
-              'Remove and delete',
+              'Remove stream',
               style: TextStyle(color: danger),
             ),
           ),
@@ -209,6 +243,6 @@ class TorrentsScreen extends StatelessWidget {
       ),
     );
     if (choice == null || choice == 'cancel') return;
-    await appEngine.remove(torrent.id, deleteFiles: choice == 'delete');
+    await appEngine.remove(torrent.id);
   }
 }

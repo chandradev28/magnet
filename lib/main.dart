@@ -38,12 +38,17 @@ class MagnetApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'magnet',
-      debugShowCheckedModeBanner: false,
-      scaffoldMessengerKey: messengerKey,
-      theme: buildMagnetTheme(),
-      home: const HomeShell(),
+    return AnimatedBuilder(
+      animation: appSettings,
+      builder: (context, _) => MaterialApp(
+        title: 'magnet',
+        debugShowCheckedModeBanner: false,
+        scaffoldMessengerKey: messengerKey,
+        theme: buildMagnetTheme(brightness: Brightness.light),
+        darkTheme: buildMagnetTheme(brightness: Brightness.dark),
+        themeMode: appSettings.darkMode ? ThemeMode.dark : ThemeMode.light,
+        home: const HomeShell(),
+      ),
     );
   }
 }

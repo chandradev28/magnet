@@ -24,6 +24,7 @@ class SettingsStore extends ChangeNotifier {
   bool resumePlayback = true;
   bool injectTrackers = true;
   bool backgroundService = true;
+  bool darkMode = true;
 
   int get cacheBytes => cacheMb * 1024 * 1024;
   int get preloadBytes => preloadMb * 1024 * 1024;
@@ -41,14 +42,17 @@ class SettingsStore extends ChangeNotifier {
         readAheadPct = json['readAheadPct'] as int? ?? readAheadPct;
         connections = json['connections'] as int? ?? connections;
         preloadMb = json['preloadMb'] as int? ?? preloadMb;
-        disconnectTimeout = json['disconnectTimeout'] as int? ?? disconnectTimeout;
+        disconnectTimeout =
+            json['disconnectTimeout'] as int? ?? disconnectTimeout;
         softGateSeconds = json['softGateSeconds'] as int? ?? softGateSeconds;
         bufferTimeoutSeconds =
             json['bufferTimeoutSeconds'] as int? ?? bufferTimeoutSeconds;
         autoPlay = json['autoPlay'] as bool? ?? autoPlay;
         resumePlayback = json['resumePlayback'] as bool? ?? resumePlayback;
         injectTrackers = json['injectTrackers'] as bool? ?? injectTrackers;
-        backgroundService = json['backgroundService'] as bool? ?? backgroundService;
+        backgroundService =
+            json['backgroundService'] as bool? ?? backgroundService;
+        darkMode = json['darkMode'] as bool? ?? darkMode;
       }
     } catch (_) {
       // Defaults are good enough to stream.
@@ -69,6 +73,7 @@ class SettingsStore extends ChangeNotifier {
     bool? resumePlayback,
     bool? injectTrackers,
     bool? backgroundService,
+    bool? darkMode,
   }) async {
     if (cacheMb != null) this.cacheMb = cacheMb;
     if (preloadPct != null) this.preloadPct = preloadPct;
@@ -84,6 +89,7 @@ class SettingsStore extends ChangeNotifier {
     if (resumePlayback != null) this.resumePlayback = resumePlayback;
     if (injectTrackers != null) this.injectTrackers = injectTrackers;
     if (backgroundService != null) this.backgroundService = backgroundService;
+    if (darkMode != null) this.darkMode = darkMode;
     notifyListeners();
     await _save();
   }
@@ -101,6 +107,7 @@ class SettingsStore extends ChangeNotifier {
     resumePlayback = true;
     injectTrackers = true;
     backgroundService = true;
+    darkMode = true;
     notifyListeners();
     await _save();
   }
@@ -123,6 +130,7 @@ class SettingsStore extends ChangeNotifier {
           'resumePlayback': resumePlayback,
           'injectTrackers': injectTrackers,
           'backgroundService': backgroundService,
+          'darkMode': darkMode,
         }),
       );
     } catch (_) {
