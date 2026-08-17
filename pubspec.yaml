@@ -35,7 +35,7 @@ dependencies:
   android_intent_plus: ^5.3.1
   libtorrent_flutter: ^2.0.0
   media_kit: ^1.2.6
-  media_kit_video: 1.2.5
+  media_kit_video: ^2.0.1
   media_kit_libs_video: ^1.0.7
   shared_preferences: ^2.5.3
   url_launcher: ^6.3.1
