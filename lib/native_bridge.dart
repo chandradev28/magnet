@@ -30,7 +30,7 @@ class NativeBridge {
 
   /// Magnets delivered while the app is already running.
   static Stream<String> links() {
-    if (!supported) return Stream<String>.empty();
+    if (!supported) return const Stream<String>.empty();
     return _events.receiveBroadcastStream().map((event) => '$event');
   }
 
