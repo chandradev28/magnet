@@ -126,10 +126,49 @@ class _MagnetHomePageState extends State<MagnetHomePage> {
   static const _historyKey = 'magnet.history.v1';
 
   /// RAM the native piece cache may use for a stream.
-  static const _streamCacheBytes = 192 * 1024 * 1024;
+  ///
+  /// Keep this modest. `preloadCache` and `readerReadAhead` are percentages *of
+  /// this value*, so an oversized cache pushes the amount of data required
+  /// before StreamState.ready far out of reach on an ordinary swarm.
+  static const _streamCacheBytes = 64 * 1024 * 1024;
+
+  /// Percentage of the cache preloaded before the engine reports `ready`.
+  static const _preloadPct = 10;
+
+  /// Percentage of the cache used as the reader read-ahead window.
+  static const _readAheadPct = 40;
+
+  /// Concurrent piece requests allowed per reader.
+  static const _readerConnections = 40;
+
+  /// Head bytes we explicitly ask the engine to preload before playback.
+  static const _preloadBytes = 8 * 1024 * 1024;
 
   /// How long we wait for the swarm to fill the startup buffer.
-  static const _bufferTimeout = Duration(seconds: 150);
+  static const _bufferTimeout = Duration(seconds: 90);
+
+  /// After this long, any usable head data is enough to hand off to the player.
+  static const _softGate = Duration(seconds: 12);
+
+  /// How often we force a fresh announce while metadata is still missing.
+  static const _reannounceEvery = Duration(seconds: 25);
+
+  /// How long we tolerate zero peers before saying the swarm looks unreachable.
+  static const _peerWatchdog = Duration(seconds: 60);
+
+  /// Injected into every magnet so peer discovery never depends on the remote
+  /// tracker list download succeeding at startup.
+  static const _fallbackTrackers = <String>[
+    'udp://tracker.opentrackr.org:1337/announce',
+    'udp://open.tracker.cl:1337/announce',
+    'udp://open.demonii.com:1337/announce',
+    'udp://tracker.torrent.eu.org:451/announce',
+    'udp://exodus.desync.com:6969/announce',
+    'udp://explodie.org:6969/announce',
+    'udp://tracker.dler.org:6969/announce',
+    'udp://tracker.openbittorrent.com:6969/announce',
+    'http://tracker.opentrackr.org:1337/announce',
+  ];
 
   static final _videoExtensions = RegExp(
     r'\.(mp4|mkv|avi|mov|m4v|webm|flv|wmv|mpg|mpeg|ts|m2ts|3gp|ogv|divx|vob)$',
@@ -150,6 +189,7 @@ class _MagnetHomePageState extends State<MagnetHomePage> {
   StreamSubscription<Map<int, TorrentInfo>>? _torrentSubscription;
   StreamSubscription<Map<int, StreamInfo>>? _streamSubscription;
   StreamSubscription<String>? _playerErrorSubscription;
+  Timer? _statusTimer;
 
   int? _torrentId;
   TorrentInfo? _torrent;
@@ -158,6 +198,9 @@ class _MagnetHomePageState extends State<MagnetHomePage> {
   List<FileInfo> _files = [];
   bool _loadingFiles = false;
   int? _autoStartedTorrentId;
+  DateTime? _addedAt;
+  DateTime? _lastReannounce;
+  int _reannounceCount = 0;
 
   StreamInfo? _stream;
   StreamInfo? _subtitleStream;
@@ -242,17 +285,21 @@ class _MagnetHomePageState extends State<MagnetHomePage> {
       }
       final engine = LibtorrentFlutter.instance;
 
-      // Streaming needs a large reader cache, aggressive read-ahead and a
-      // disconnect timeout long enough to survive slow metadata lookups.
+      // Start from the engine's own defaults and override only what streaming
+      // needs. Building a config from scratch would silently reset any native
+      // default that differs from the Dart-side default.
       try {
+        final defaults = engine.getDefaultConfig();
         engine.configureSession(
-          const BtConfig(
+          defaults.copyWith(
             cacheSize: _streamCacheBytes,
-            readerReadAhead: 95,
-            preloadCache: 50,
-            connectionsLimit: 40,
-            torrentDisconnectTimeout: 300,
+            readerReadAhead: _readAheadPct,
+            preloadCache: _preloadPct,
+            connectionsLimit: _readerConnections,
+            torrentDisconnectTimeout: 600,
             responsiveMode: true,
+            disableDht: false,
+            disableUpnp: false,
           ),
         );
       } catch (_) {
@@ -267,6 +314,7 @@ class _MagnetHomePageState extends State<MagnetHomePage> {
         _engineReady = true;
         _error = null;
       });
+      _startStatusPolling();
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -276,13 +324,49 @@ class _MagnetHomePageState extends State<MagnetHomePage> {
     }
   }
 
+  /// The package only emits on `torrentUpdates` when its internal change check
+  /// trips, and that check ignores `numSeeds`, so relying on the stream alone
+  /// leaves the stats frozen. Read the authoritative snapshot every second.
+  void _startStatusPolling() {
+    _statusTimer?.cancel();
+    _statusTimer = Timer.periodic(
+      const Duration(seconds: 1),
+      (_) => _pollStatus(),
+    );
+  }
+
+  void _pollStatus() {
+    final engine = _engine;
+    if (engine == null || !mounted) return;
+
+    final id = _torrentId;
+    if (id != null) {
+      final torrent = engine.torrents[id];
+      if (torrent != null) _applyTorrent(torrent);
+    }
+
+    final streamId = _stream?.id;
+    if (streamId != null) {
+      try {
+        final info = engine.getStreamInfo(streamId);
+        if (info != null && mounted) setState(() => _stream = info);
+      } catch (_) {
+        // Stream disappeared between polls.
+      }
+    }
+
+    _runWatchdogs();
+  }
+
   void _handleTorrents(Map<int, TorrentInfo> snapshot) {
-    if (!mounted) return;
     final id = _torrentId;
     if (id == null) return;
     final torrent = snapshot[id];
-    if (torrent == null) return;
+    if (torrent != null) _applyTorrent(torrent);
+  }
 
+  void _applyTorrent(TorrentInfo torrent) {
+    if (!mounted) return;
     setState(() {
       _torrent = torrent;
       if (torrent.errorMsg.isNotEmpty) {
@@ -295,7 +379,45 @@ class _MagnetHomePageState extends State<MagnetHomePage> {
     });
 
     if (torrent.hasMetadata && _files.isEmpty && !_loadingFiles) {
-      _loadFiles(id);
+      _loadFiles(torrent.id);
+    }
+  }
+
+  /// While metadata is missing, keep nudging the swarm and tell the user the
+  /// truth if nobody ever answers.
+  void _runWatchdogs() {
+    final engine = _engine;
+    final id = _torrentId;
+    final torrent = _torrent;
+    final addedAt = _addedAt;
+    if (engine == null || id == null || addedAt == null) return;
+    if (torrent != null && torrent.hasMetadata) return;
+
+    final now = DateTime.now();
+    final waited = now.difference(addedAt);
+
+    if (waited > _reannounceEvery &&
+        now.difference(_lastReannounce ?? addedAt) > _reannounceEvery) {
+      _lastReannounce = now;
+      try {
+        // Pausing and resuming forces libtorrent to re-announce to every
+        // tracker and re-query the DHT.
+        engine.pauseTorrent(id);
+        engine.resumeTorrent(id);
+        _reannounceCount++;
+      } catch (_) {
+        // Torrent already gone.
+      }
+    }
+
+    final peers = torrent?.numPeers ?? 0;
+    if (waited > _peerWatchdog && peers <= 0 && _error == null && mounted) {
+      setState(() {
+        _error = 'No peers reachable after ${waited.inSeconds}s. The DHT is '
+            'responding but nobody is sharing this info-hash with your '
+            'connection. Try a different magnet, or switch to Wi-Fi — some '
+            'mobile carriers block peer traffic.';
+      });
     }
   }
 
@@ -354,6 +476,29 @@ class _MagnetHomePageState extends State<MagnetHomePage> {
 
   // ── Magnet lifecycle ──────────────────────────────────────────────────────
 
+  /// Appends known-good trackers that are missing from [magnet]. Peer discovery
+  /// must not depend on the engine's remote tracker list download working.
+  String _withFallbackTrackers(String magnet) {
+    final existing = RegExp(r'[?&]tr=([^&]*)', caseSensitive: false)
+        .allMatches(magnet)
+        .map((match) {
+          final raw = match.group(1) ?? '';
+          try {
+            return Uri.decodeComponent(raw).toLowerCase();
+          } catch (_) {
+            return raw.toLowerCase();
+          }
+        })
+        .toSet();
+
+    final buffer = StringBuffer(magnet);
+    for (final tracker in _fallbackTrackers) {
+      if (existing.contains(tracker.toLowerCase())) continue;
+      buffer.write('&tr=${Uri.encodeComponent(tracker)}');
+    }
+    return buffer.toString();
+  }
+
   Future<void> _addMagnet([String? supplied]) async {
     final value = (supplied ?? _magnetController.text).trim();
     final lower = value.toLowerCase();
@@ -385,7 +530,7 @@ class _MagnetHomePageState extends State<MagnetHomePage> {
         }
       }
 
-      final id = engine.addMagnet(value);
+      final id = engine.addMagnet(_withFallbackTrackers(value));
       final name = _nameFromMagnet(value);
       final entry = MagnetEntry(
         uri: value,
@@ -402,6 +547,9 @@ class _MagnetHomePageState extends State<MagnetHomePage> {
         _activeName = name;
         _files = [];
         _autoStartedTorrentId = null;
+        _addedAt = DateTime.now();
+        _lastReannounce = null;
+        _reannounceCount = 0;
         _isAdding = false;
         _status = 'Looking for peers and metadata…';
       });
@@ -452,9 +600,8 @@ class _MagnetHomePageState extends State<MagnetHomePage> {
 
   // ── Streaming ─────────────────────────────────────────────────────────────
 
-  /// Starts a native stream, waits until the engine reports it is actually
-  /// ready, and only then hands the local URL to the player. Opening the URL
-  /// immediately is what made playback fail silently before.
+  /// Starts a native stream, waits until enough of the head exists to be
+  /// playable, and only then hands the local URL to the player.
   Future<void> _startStream(FileInfo file) async {
     final torrentId = _torrentId;
     final engine = _engine;
@@ -487,14 +634,25 @@ class _MagnetHomePageState extends State<MagnetHomePage> {
       });
 
       try {
-        engine.preloadStream(info.id);
+        engine.setCacheSettings(
+          info.id,
+          capacity: _streamCacheBytes,
+          readAheadPct: _readAheadPct,
+          connectionsLimit: _readerConnections,
+        );
+      } catch (_) {
+        // Reader tuning is optional.
+      }
+
+      try {
+        engine.preloadStream(info.id, preloadBytes: _preloadBytes);
       } catch (_) {
         // Preload is an optimisation, not a requirement.
       }
 
-      final ready = await _waitForStreamReady(info.id);
+      final playable = await _waitForPlayableBuffer(info.id);
       if (!mounted) return;
-      if (!ready) {
+      if (!playable) {
         setState(() {
           _isBuffering = false;
           _bufferTimedOut = true;
@@ -514,19 +672,28 @@ class _MagnetHomePageState extends State<MagnetHomePage> {
     }
   }
 
-  Future<bool> _waitForStreamReady(int streamId) async {
+  /// `StreamState.ready` means the engine finished its full preload target.
+  /// libmpv only needs the container head to start, so also accept real head
+  /// data once the soft gate has passed. Waiting for `ready` alone is what kept
+  /// the player from ever opening.
+  Future<bool> _waitForPlayableBuffer(int streamId) async {
     final engine = _engine;
     if (engine == null) return false;
-    final deadline = DateTime.now().add(_bufferTimeout);
+    final start = DateTime.now();
+    final deadline = start.add(_bufferTimeout);
 
     while (DateTime.now().isBefore(deadline)) {
       final info = engine.getStreamInfo(streamId);
       if (info != null) {
         if (mounted) setState(() => _stream = info);
-        if (info.streamState == StreamState.ready) return true;
         if (info.streamState == StreamState.error) return false;
+        if (info.streamState == StreamState.ready) return true;
+
+        final elapsed = DateTime.now().difference(start);
+        final hasHead = info.bufferPieces > 0 || info.readHead > 0;
+        if (elapsed > _softGate && hasHead) return true;
       }
-      await Future<void>.delayed(const Duration(milliseconds: 350));
+      await Future<void>.delayed(const Duration(milliseconds: 300));
       if (!mounted || _stream?.id != streamId) return false;
     }
     return false;
@@ -556,6 +723,35 @@ class _MagnetHomePageState extends State<MagnetHomePage> {
     });
 
     await player.open(Media(stream.url), play: true);
+  }
+
+  /// Range-requests the engine's local HTTP server. This proves whether the
+  /// native side is serving bytes independently of the player.
+  Future<void> _probeStream() async {
+    final stream = _stream;
+    if (stream == null) {
+      _showMessage('Start a stream first.');
+      return;
+    }
+    final client = HttpClient();
+    try {
+      final request = await client.getUrl(Uri.parse(stream.url));
+      request.headers.set(HttpHeaders.rangeHeader, 'bytes=0-65535');
+      final response = await request.close();
+      var received = 0;
+      await for (final chunk in response) {
+        received += chunk.length;
+        if (received >= 65536) break;
+      }
+      _showMessage(
+        'Stream server answered ${response.statusCode} '
+        'with ${formatBytes(received)}.',
+      );
+    } catch (error) {
+      _showMessage('Stream server unreachable: $error');
+    } finally {
+      client.close(force: true);
+    }
   }
 
   Future<void> _openExternalPlayer() async {
@@ -741,6 +937,14 @@ class _MagnetHomePageState extends State<MagnetHomePage> {
     if (!torrent.hasMetadata) return 'Getting metadata';
     if (torrent.isPaused) return 'Paused';
     return torrent.state.label;
+  }
+
+  String get _waitedLabel {
+    final addedAt = _addedAt;
+    if (addedAt == null) return '—';
+    final seconds = DateTime.now().difference(addedAt).inSeconds;
+    if (seconds < 60) return '${seconds}s';
+    return '${seconds ~/ 60}m ${seconds % 60}s';
   }
 
   // ── UI ────────────────────────────────────────────────────────────────────
@@ -1162,11 +1366,22 @@ class _MagnetHomePageState extends State<MagnetHomePage> {
                 ),
               ),
               const SizedBox(height: 9),
-              Text(
-                _status.isEmpty
-                    ? 'Asking DHT and trackers for metadata…'
-                    : _status,
-                style: const TextStyle(color: _muted, fontSize: 12),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Expanded(
+                    child: Text(
+                      _status.isEmpty
+                          ? 'Asking DHT and trackers for metadata…'
+                          : _status,
+                      style: const TextStyle(color: _muted, fontSize: 12),
+                    ),
+                  ),
+                  Text(
+                    _waitedLabel,
+                    style: const TextStyle(color: _muted, fontSize: 12),
+                  ),
+                ],
               ),
             ],
           ],
@@ -1531,6 +1746,7 @@ class _MagnetHomePageState extends State<MagnetHomePage> {
   Widget _buildDiagnostics() {
     final engine = _engine;
     final stream = _stream;
+    final torrent = _torrent;
     String version;
     try {
       version = engine?.libraryVersion ?? 'not started';
@@ -1553,9 +1769,21 @@ class _MagnetHomePageState extends State<MagnetHomePage> {
             _diagnosticRow('Torrent state', _stateLabel),
             _diagnosticRow(
               'Has metadata',
-              '${_torrent?.hasMetadata ?? false}',
+              '${torrent?.hasMetadata ?? false}',
             ),
+            _diagnosticRow(
+              'Peers / seeds',
+              '${_safe(torrent?.numPeers ?? 0)} / '
+                  '${_safe(torrent?.numSeeds ?? 0)}',
+            ),
+            _diagnosticRow('Waiting for', _waitedLabel),
+            _diagnosticRow('Re-announces', '$_reannounceCount'),
             _diagnosticRow('Files', '${_files.length}'),
+            _diagnosticRow(
+              'Cache',
+              '${_streamCacheBytes ~/ (1024 * 1024)} MB · '
+                  'preload $_preloadPct% · read-ahead $_readAheadPct%',
+            ),
             _diagnosticRow(
               'Stream state',
               stream == null ? 'no stream' : stream.streamState.name,
@@ -1564,15 +1792,25 @@ class _MagnetHomePageState extends State<MagnetHomePage> {
             if (stream != null)
               Align(
                 alignment: Alignment.centerLeft,
-                child: TextButton.icon(
-                  onPressed: () async {
-                    await Clipboard.setData(
-                      ClipboardData(text: stream.url),
-                    );
-                    _showMessage('Stream URL copied.');
-                  },
-                  icon: const Icon(Icons.copy_rounded, size: 16),
-                  label: const Text('Copy stream URL'),
+                child: Wrap(
+                  spacing: 4,
+                  children: [
+                    TextButton.icon(
+                      onPressed: () async {
+                        await Clipboard.setData(
+                          ClipboardData(text: stream.url),
+                        );
+                        _showMessage('Stream URL copied.');
+                      },
+                      icon: const Icon(Icons.copy_rounded, size: 16),
+                      label: const Text('Copy URL'),
+                    ),
+                    TextButton.icon(
+                      onPressed: _probeStream,
+                      icon: const Icon(Icons.network_check_rounded, size: 16),
+                      label: const Text('Test stream'),
+                    ),
+                  ],
                 ),
               ),
           ],
@@ -1730,6 +1968,7 @@ class _MagnetHomePageState extends State<MagnetHomePage> {
 
   @override
   void dispose() {
+    _statusTimer?.cancel();
     _magnetController.dispose();
     _torrentSubscription?.cancel();
     _streamSubscription?.cancel();
