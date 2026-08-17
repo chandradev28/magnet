@@ -15,8 +15,15 @@ import 'messenger.dart';
 import 'native_bridge.dart';
 import 'settings_store.dart';
 
-/// How often we force a fresh announce while metadata is still missing.
-const reannounceEvery = Duration(seconds: 25);
+/// Pausing a torrent aborts in-flight tracker announces and DHT lookups, so
+/// the first nudge waits until the swarm has had a fair chance.
+const firstReannounceAfter = Duration(seconds: 45);
+
+/// How often we force a fresh announce after that, while metadata is missing.
+const reannounceEvery = Duration(seconds: 60);
+
+/// Nudging forever guarantees metadata limbo. Stop after this many tries.
+const maxReannounces = 4;
 
 /// How long we tolerate zero peers before telling the user the truth.
 const peerWatchdog = Duration(seconds: 60);
@@ -47,6 +54,22 @@ final _subtitleExtensions = RegExp(
   r'\.(srt|ass|ssa|vtt|sub|idx)$',
   caseSensitive: false,
 );
+
+/// Native log lines worth keeping. Everything else is Flutter framework noise.
+const _nativeLogKeywords = <String>[
+  'libtorrent',
+  'tracker',
+  'dht',
+  'peer',
+  'metadata',
+  'listen',
+  'socket',
+  'port',
+  'torrent',
+  'stream',
+  'mpv',
+  'codec',
+];
 
 bool isVideoFile(String name) => _videoExtensions.hasMatch(name);
 
@@ -100,6 +123,12 @@ String withFallbackTrackers(String magnet) {
   return buffer.toString();
 }
 
+EngineController? _nativeLogTarget;
+
+/// The engine and the player print their real failures and expose no API to
+/// read them. `main` captures stdout in a Zone and forwards the lines here.
+void logNativeLine(String line) => _nativeLogTarget?.logNative(line);
+
 /// Owns the torrent session, the active stream and the player.
 class EngineController extends ChangeNotifier {
   EngineController({required this.settings, required this.store});
@@ -135,6 +164,10 @@ class EngineController extends ChangeNotifier {
   final Set<int> _loadingFiles = <int>{};
   final Set<String> _mutedErrors = <String>{};
   final List<String> logLines = <String>[];
+
+  /// How many native alerts we have folded in. Proves capture is working even
+  /// when every line is filtered out as noise.
+  int nativeAlerts = 0;
 
   int? activeTorrentId;
   StreamInfo? stream;
@@ -200,6 +233,36 @@ class EngineController extends ChangeNotifier {
     if (logLines.length > 200) logLines.removeLast();
   }
 
+  /// Folds a captured stdout line into the log. Called from a Zone print
+  /// handler, so it must never notify listeners (that could fire mid-build)
+  /// and must never print, or it would recurse forever.
+  void logNative(String line) {
+    if (_disposed) return;
+    var text = line.trim();
+    if (text.isEmpty) return;
+
+    final lower = text.toLowerCase();
+    var relevant = false;
+    for (final keyword in _nativeLogKeywords) {
+      if (lower.contains(keyword)) {
+        relevant = true;
+        break;
+      }
+    }
+    if (!relevant) return;
+
+    nativeAlerts++;
+    if (text.length > 300) text = '${text.substring(0, 300)}…';
+    _log('native: ${text.replaceFirst('LibtorrentFlutter Alert: ', '')}');
+
+    // A failed listen port explains "traffic but no peers" completely, so
+    // promote it from a log line to a visible error.
+    final failed = lower.contains('fail') || lower.contains('error');
+    if (failed && lower.contains('listen') && error == null) {
+      _fail('The engine could not open a listening port: $text');
+    }
+  }
+
   void _fail(String message) {
     if (_mutedErrors.contains(message)) return;
     error = message;
@@ -216,6 +279,7 @@ class EngineController extends ChangeNotifier {
   // ── Session ───────────────────────────────────────────────────
 
   Future<void> init() async {
+    _nativeLogTarget = this;
     try {
       if (!LibtorrentFlutter.isInitialized) {
         await LibtorrentFlutter.init(
@@ -339,8 +403,8 @@ class EngineController extends ChangeNotifier {
     _bump();
   }
 
-  /// Keeps nudging the swarm while metadata is missing, and says something
-  /// honest when nobody ever answers.
+  /// Nudges a silent swarm while metadata is missing - sparingly - and says
+  /// something honest when nobody ever answers.
   void _runWatchdogs() {
     final engine = _engine;
     if (engine == null) return;
@@ -352,16 +416,25 @@ class EngineController extends ChangeNotifier {
       if (started == null) continue;
 
       final waited = now.difference(started);
-      final last = lastAnnounce[torrent.id] ?? started;
-      if (waited > reannounceEvery && now.difference(last) > reannounceEvery) {
+      final peers = safeCount(torrent.numPeers);
+      final nudges = reannounces[torrent.id] ?? 0;
+      final last = lastAnnounce[torrent.id];
+      final due = last == null
+          ? waited > firstReannounceAfter
+          : now.difference(last) > reannounceEvery;
+
+      // Only nudge a torrent that has reached nobody at all. Once peers are
+      // answering, metadata is already on its way and a pause would throw the
+      // in-flight handshakes away.
+      if (due && peers == 0 && nudges < maxReannounces) {
         lastAnnounce[torrent.id] = now;
         try {
           // Pause + resume forces a re-announce to every tracker and a fresh
           // DHT lookup.
           engine.pauseTorrent(torrent.id);
           engine.resumeTorrent(torrent.id);
-          reannounces[torrent.id] = (reannounces[torrent.id] ?? 0) + 1;
-          _log('Re-announced ${torrent.id} (${reannounces[torrent.id]})');
+          reannounces[torrent.id] = nudges + 1;
+          _log('Re-announced ${torrent.id} (${nudges + 1}/$maxReannounces)');
         } catch (_) {
           // Torrent already gone.
         }
@@ -369,7 +442,7 @@ class EngineController extends ChangeNotifier {
 
       if (torrent.id == activeTorrentId &&
           waited > peerWatchdog &&
-          safeCount(torrent.numPeers) == 0 &&
+          peers == 0 &&
           error == null) {
         _fail(
           'No peers reachable after ${waited.inSeconds}s. The DHT is '
@@ -878,6 +951,7 @@ class EngineController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _nativeLogTarget = null;
     _pollTimer?.cancel();
     _positionTimer?.cancel();
     _torrentSub?.cancel();
