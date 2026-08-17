@@ -1134,7 +1134,8 @@ class _MagnetHomePageState extends State<MagnetHomePage> {
         padding: const EdgeInsets.all(22),
         child: Column(
           children: [
-            Icon(Icons.waves_rounded, color: _lime.withValues(alpha: .8), size: 38),
+            Icon(Icons.waves_rounded,
+                color: _lime.withValues(alpha: .8), size: 38),
             const SizedBox(height: 10),
             const Text(
               'Ready when you are',
