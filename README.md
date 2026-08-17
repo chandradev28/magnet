@@ -5,6 +5,7 @@ Minimal Flutter Android torrent streaming app for content you own or are authori
 ## What is included
 
 - Native libtorrent engine with DHT, trackers, peers, metadata and file selection.
+- Open either a magnet link or a local `.torrent` file from the Android file picker.
 - HTTP range streaming into an in-app media_kit/libmpv player.
 - Broad video/audio codec support with embedded and external subtitle/audio track selection.
 - One-click VLC intent with a fallback chooser for other Android players.

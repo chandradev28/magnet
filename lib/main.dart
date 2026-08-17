@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:android_intent_plus/android_intent.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:libtorrent_flutter/libtorrent_flutter.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
@@ -564,6 +565,59 @@ class _MagnetHomePageState extends State<MagnetHomePage> {
       setState(() {
         _isAdding = false;
         _error = 'This magnet could not be added: $error';
+      });
+    }
+  }
+
+  Future<void> _addTorrentFile() async {
+    if (!_engineReady || _engine == null) {
+      _showMessage('The torrent engine is still starting.');
+      return;
+    }
+
+    setState(() {
+      _isAdding = true;
+      _error = null;
+    });
+
+    try {
+      final result = await FilePicker.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['torrent'],
+        withData: false,
+      );
+      if (result == null) {
+        if (mounted) setState(() => _isAdding = false);
+        return;
+      }
+
+      final selected = result.files.single;
+      final path = selected.path;
+      if (path == null || path.isEmpty) {
+        throw StateError('The selected torrent file has no readable path.');
+      }
+
+      await _closePlayback();
+      final oldTorrentId = _activeTorrentId;
+      if (oldTorrentId != null) {
+        _engine!.removeTorrent(oldTorrentId, deleteFiles: false);
+      }
+
+      final id = _engine!.addTorrentFile(path, null, true);
+      setState(() {
+        _activeTorrentId = id;
+        _activeMagnet = null;
+        _activeName = selected.name;
+        _magnetController.clear();
+        _files = [];
+        _torrents = {};
+        _isAdding = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _isAdding = false;
+        _error = 'This .torrent file could not be added: $error';
       });
     }
   }
@@ -1154,6 +1208,17 @@ class _MagnetHomePageState extends State<MagnetHomePage> {
                 foregroundColor: _ink,
                 minimumSize: const Size.fromHeight(54),
                 textStyle: const TextStyle(fontWeight: FontWeight.w800),
+              ),
+            ),
+            const SizedBox(height: 9),
+            OutlinedButton.icon(
+              onPressed: _isAdding ? null : _addTorrentFile,
+              icon: const Icon(Icons.file_open_outlined),
+              label: const Text('Open .torrent file'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.white,
+                minimumSize: const Size.fromHeight(48),
+                side: const BorderSide(color: Color(0xFF355849)),
               ),
             ),
           ],
