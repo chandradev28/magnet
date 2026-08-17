@@ -629,6 +629,17 @@ class EngineController extends ChangeNotifier {
     final engine = _engine;
     if (id == null || engine == null) return;
 
+    // The native stream server cannot serve a file until metadata is present.
+    // Keep accidental early calls from creating a URL that media_kit cannot
+    // recognize (this also protects against stale UI taps during metadata).
+    if (torrents[id]?.hasMetadata != true && !filesOf.containsKey(id)) {
+      error =
+          'Still getting torrent metadata. Playback will appear when a video is ready.';
+      status = 'Waiting for video metadata…';
+      _bump();
+      return;
+    }
+
     await stopPlayback(quiet: true);
     activeTorrentId = id;
     buffering = true;
@@ -690,13 +701,15 @@ class EngineController extends ChangeNotifier {
   }
 
   /// `StreamState.ready` means the engine hit its full preload target. libmpv
-  /// only needs the container head, so also accept real head data once the soft
-  /// gate has passed. Waiting for `ready` alone is what kept the player closed.
+  /// only needs the container head, but a completed torrent piece is not the
+  /// same thing as a playable HTTP response. Probe the actual local stream
+  /// first; this also advances the native reader and makes readHead real.
   Future<bool> _waitForPlayableBuffer(int streamId) async {
     final engine = _engine;
     if (engine == null) return false;
     final start = DateTime.now();
     final deadline = start.add(settings.bufferTimeout);
+    var nextProbe = DateTime.now();
 
     while (DateTime.now().isBefore(deadline)) {
       if (_disposed) return false;
@@ -711,16 +724,67 @@ class EngineController extends ChangeNotifier {
         stream = info;
         _bump();
         if (info.streamState == StreamState.error) return false;
-        if (info.streamState == StreamState.ready) return true;
-        final elapsed = DateTime.now().difference(start);
         final hasHead = info.bufferPieces > 0 || info.readHead > 0;
-        if (elapsed > settings.softGate && hasHead) return true;
+        final now = DateTime.now();
+        if (hasHead && now.isAfter(nextProbe)) {
+          nextProbe = now.add(const Duration(seconds: 3));
+          final served = await _probePlayableHead(info);
+          if (served) {
+            final refreshed = engine.getStreamInfo(streamId);
+            if (refreshed != null) {
+              stream = refreshed;
+              _bump();
+            }
+            if (stream?.streamState == StreamState.ready &&
+                (stream?.readHead ?? 0) > 0) {
+              return true;
+            }
+          }
+        }
       }
 
       await Future<void>.delayed(const Duration(milliseconds: 300));
       if (stream?.id != streamId) return false;
     }
     return false;
+  }
+
+  Future<bool> _probePlayableHead(StreamInfo info) async {
+    if (info.fileSize <= 0) return false;
+    final probeBytes = info.fileSize < 65536 ? info.fileSize : 65536;
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 8)
+      ..idleTimeout = const Duration(seconds: 8);
+    try {
+      final request = await client.getUrl(Uri.parse(info.url));
+      request.headers
+        ..set(HttpHeaders.rangeHeader, 'bytes=0-${probeBytes - 1}')
+        ..set(HttpHeaders.acceptHeader, '*/*');
+      final response = await request.close().timeout(
+            const Duration(seconds: 45),
+          );
+      if (response.statusCode != HttpStatus.ok &&
+          response.statusCode != HttpStatus.partialContent) {
+        _log('Stream probe returned HTTP ${response.statusCode}');
+        return false;
+      }
+
+      var received = 0;
+      await for (final chunk in response.timeout(
+        const Duration(seconds: 20),
+      )) {
+        received += chunk.length;
+        if (received >= probeBytes) break;
+      }
+      _log('Stream probe received ${fmtBytes(received)}');
+      final minimum = probeBytes < 4096 ? probeBytes : 4096;
+      return received >= minimum;
+    } catch (err) {
+      _log('Stream probe failed: $err');
+      return false;
+    } finally {
+      client.close(force: true);
+    }
   }
 
   Future<void> openPlayer() async {

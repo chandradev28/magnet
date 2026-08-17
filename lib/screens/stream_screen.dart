@@ -130,10 +130,6 @@ class _StreamScreenState extends State<StreamScreen> {
                     'straight into this app.',
               ),
             ],
-            if (torrent != null) ...[
-              const SizedBox(height: 16),
-              _diagnostics(),
-            ],
           ],
         );
       },
@@ -525,84 +521,6 @@ class _StreamScreenState extends State<StreamScreen> {
               ),
             )
           : null,
-    );
-  }
-
-  Widget _diagnostics() {
-    final engine = appEngine;
-    final torrent = engine.activeTorrent;
-    final stream = engine.stream;
-
-    return Card(
-      child: Theme(
-        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-        child: ExpansionTile(
-          tilePadding: const EdgeInsets.symmetric(horizontal: 16),
-          childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-          title: const Text(
-            'Diagnostics',
-            style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14),
-          ),
-          subtitle: Text(
-            'libtorrent ${engine.version}',
-            style: const TextStyle(color: muted, fontSize: 12),
-          ),
-          children: [
-            infoRow('Torrent id', '${torrent?.id ?? '—'}'),
-            infoRow(
-              'State',
-              torrent == null ? '—' : engine.stateLabelFor(torrent.id),
-            ),
-            infoRow('Metadata', torrent?.hasMetadata == true ? 'yes' : 'no'),
-            infoRow('Waiting', engine.waitedLabelFor(engine.activeTorrentId)),
-            infoRow(
-              'Re-announces',
-              '${engine.reannounces[engine.activeTorrentId] ?? 0}',
-            ),
-            infoRow(
-              'Queue position',
-              torrent == null ? '—' : '${torrent.queuePosition}',
-            ),
-            infoRow('Downloaded', fmtBytes(torrent?.totalDone ?? 0)),
-            infoRow('Uploaded', fmtBytes(torrent?.totalUploaded ?? 0)),
-            infoRow('Stream id', '${stream?.id ?? '—'}'),
-            infoRow(
-              'Stream state',
-              stream == null ? '—' : stream.streamState.name,
-            ),
-            infoRow('Read head', fmtBytes(stream?.readHead ?? 0)),
-            infoRow(
-              'Read-ahead',
-              stream == null
-                  ? '—'
-                  : '${stream.bufferPieces}/${stream.readaheadWindow} pieces',
-            ),
-            infoRow('Stream URL', stream?.url ?? '—'),
-            const SizedBox(height: 6),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                OutlinedButton.icon(
-                  onPressed: stream == null
-                      ? null
-                      : () {
-                          Clipboard.setData(ClipboardData(text: stream.url));
-                          showMessage('Stream URL copied.');
-                        },
-                  icon: const Icon(Icons.copy_rounded, size: 16),
-                  label: const Text('Copy URL'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: stream == null ? null : appEngine.probeStream,
-                  icon: const Icon(Icons.network_check_rounded, size: 16),
-                  label: const Text('Test stream'),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
     );
   }
 }
