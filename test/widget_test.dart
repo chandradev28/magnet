@@ -1,18 +1,29 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:magnet/main.dart';
 
 void main() {
+  setUp(() {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+  });
+
   testWidgets('renders the magnet landing screen', (WidgetTester tester) async {
     await tester.pumpWidget(const MagnetApp());
+    await tester.pump();
+
     expect(find.text('magnet'), findsOneWidget);
     expect(find.text('Start streaming'), findsOneWidget);
+    expect(find.text('Ready when you are'), findsOneWidget);
+  });
+
+  testWidgets('shows the library tab', (WidgetTester tester) async {
+    await tester.pumpWidget(const MagnetApp());
+    await tester.pump();
+
+    await tester.tap(find.text('Library'));
+    await tester.pump();
+
+    expect(find.text('Saved for later.'), findsOneWidget);
   });
 }
