@@ -7,7 +7,7 @@ plugins {
 
 android {
     namespace = "com.magnet.app.magnet"
-    compileSdk = 36
+    compileSdk = 34
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
