@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:android_intent_plus/android_intent.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart' show SnackBarAction;
 import 'package:libtorrent_flutter/libtorrent_flutter.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';

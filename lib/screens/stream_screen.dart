@@ -478,7 +478,8 @@ class _StreamScreenState extends State<StreamScreen> {
       trailing: canPlay
           ? IconButton(
               tooltip: playing ? 'Playing' : 'Play this file',
-              onPressed: playing ? _openPlayer : () => appEngine.startStream(file),
+              onPressed:
+                  playing ? _openPlayer : () => appEngine.startStream(file),
               icon: Icon(
                 playing
                     ? Icons.graphic_eq_rounded
@@ -511,14 +512,21 @@ class _StreamScreenState extends State<StreamScreen> {
           ),
           children: [
             infoRow('Torrent id', '${torrent?.id ?? '—'}'),
-            infoRow('State', torrent == null ? '—' : engine.stateLabelFor(torrent.id)),
+            infoRow(
+              'State',
+              torrent == null ? '—' : engine.stateLabelFor(torrent.id),
+            ),
             infoRow('Metadata', torrent?.hasMetadata == true ? 'yes' : 'no'),
             infoRow('Waiting', engine.waitedLabelFor(engine.activeTorrentId)),
             infoRow(
               'Re-announces',
               '${engine.reannounces[engine.activeTorrentId] ?? 0}',
             ),
-            infoRow('Pieces', torrent == null ? '—' : '${torrent.numPieces}'),
+            infoRow(
+              'Queue position',
+              torrent == null ? '—' : '${torrent.queuePosition}',
+            ),
+            infoRow('Downloaded', fmtBytes(torrent?.totalDone ?? 0)),
             infoRow('Uploaded', fmtBytes(torrent?.totalUploaded ?? 0)),
             infoRow('Stream id', '${stream?.id ?? '—'}'),
             infoRow(
